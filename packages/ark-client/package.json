@@ -1,0 +1,17 @@
+{
+  "name": "@ark/client",
+  "version": "1.0.0",
+  "description": "Ark frontend SDK — direct browser uploads with short-lived Ark authorization.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./package.json": "./package.json"
+  },
+  "files": ["src", "README.md", "LICENSE", "LICENSE.upstream"],
+  "sideEffects": false,
+  "keywords": ["ark", "upload", "storage", "browser"],
+  "engines": { "node": ">=20" }
+}
