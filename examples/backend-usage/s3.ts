@@ -6,11 +6,11 @@
  * change when that changes.
  */
 
-import { ArkS3 } from "@ark/server";
+import { ArkS3 } from "@nerdstackgrp/ark-server";
 import { readFile } from "node:fs/promises";
 
 const s3 = new ArkS3({
-  endpoint: "https://s3.ark.nerdstackgrp.com",
+  endpoint: "https://ark.nerdstackgrp.com/s3",
   accessKeyId: process.env.ARK_ACCESS_KEY_ID!,
   secretAccessKey: process.env.ARK_SECRET_ACCESS_KEY!,
   bucket: "product-media",

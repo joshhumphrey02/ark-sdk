@@ -3,7 +3,7 @@
  *
  * Talks to the Ark REST API with an `ark_live_…` token. Server-side only: the
  * token is a permanent secret and must never reach a browser (§15, §16). For
- * browser uploads, mint a client session and use `@ark/client`.
+ * browser uploads, mint a client session and use `@nerdstackgrp/ark-client`.
  */
 
 import { readFile } from "node:fs/promises";
@@ -11,7 +11,7 @@ import { basename } from "node:path";
 import { ArkError, errorFromRest } from "./errors";
 import type { ArkFile, ArkFolder, ArkOptions, ArkUsage, ArkImageOptions, ArkImportInput } from "./types";
 
-const DEFAULT_BASE_URL = "https://api.ark.nerdstackgrp.com";
+const DEFAULT_BASE_URL = "https://ark.nerdstackgrp.com/api";
 
 export class Ark {
   readonly #baseUrl: string;

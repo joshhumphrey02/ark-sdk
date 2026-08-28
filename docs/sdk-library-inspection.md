@@ -35,7 +35,7 @@ because that is where the derived code lives.
 **Reused for Ark:** the SigV4 primitives are the valuable part. Ark's S3
 gateway must *verify* signatures rather than produce them, so the canonical
 request construction and the `byCodePoint` ordering rule were adapted into
-`@ark/server`'s `sigv4.ts` and the gateway verifier. The 2.5k-line client class
+`@nerdstackgrp/ark-server`'s `sigv4.ts` and the gateway verifier. The 2.5k-line client class
 is not reused — Ark's backend SDK talks to Ark, not to arbitrary S3 providers.
 
 ## `s3-lite-client` — the frontend library
@@ -49,7 +49,7 @@ is not reused — Ark's backend SDK talks to Ark, not to arbitrary S3 providers.
 - **Public API:** `S3Client` from `mod.ts`.
 
 **Reused for Ark:** the chunking strategy and the error-hierarchy shape
-informed `@ark/client`. The signing code is deliberately **dropped** from the
+informed `@nerdstackgrp/ark-client`. The signing code is deliberately **dropped** from the
 browser package — §15 forbids provider credentials in a browser, and Ark's
 client authenticates with a short-lived Ark token instead. The XML parser moved
 server-side, where the gateway needs it to render S3 error documents.

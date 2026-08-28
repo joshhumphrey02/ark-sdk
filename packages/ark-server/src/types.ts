@@ -1,4 +1,4 @@
-/** Public types for `@ark/server` (§46). */
+/** Public types for `@nerdstackgrp/ark-server` (§46). */
 
 export type ArkFile = {
   id: string;

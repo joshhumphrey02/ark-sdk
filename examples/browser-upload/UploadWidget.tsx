@@ -1,12 +1,12 @@
 /**
  * Direct browser upload with progress and cancellation.
  *
- * React is used here only to show the SDK in context -- `@ark/client` itself
+ * React is used here only to show the SDK in context -- `@nerdstackgrp/ark-client` itself
  * imports no framework and works the same in Vue, Svelte or plain JS.
  */
 
 import { useCallback, useRef, useState } from "react";
-import { ArkClient, ArkError, type ArkUploadHandle } from "@ark/client";
+import { ArkClient, ArkError, type ArkUploadHandle } from "@nerdstackgrp/ark-client";
 
 export function UploadWidget() {
   const [progress, setProgress] = useState(0);

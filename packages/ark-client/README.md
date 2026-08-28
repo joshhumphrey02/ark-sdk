@@ -1,4 +1,4 @@
-# `@ark/client`
+# `@nerdstackgrp/ark-client`
 
 The Ark frontend SDK. Direct browser uploads with short-lived Ark
 authorization — no provider credentials ever reach the browser.
@@ -6,7 +6,7 @@ authorization — no provider credentials ever reach the browser.
 ## Install
 
 ```bash
-npm install @ark/client
+npm install @nerdstackgrp/ark-client
 ```
 
 ## Authentication
@@ -19,7 +19,7 @@ Instead, mint a short-lived scoped session from your backend:
 
 ```ts
 // Your backend
-import { Ark } from "@ark/server";
+import { Ark } from "@nerdstackgrp/ark-server";
 
 const ark = new Ark({ token: process.env.ARK_API_TOKEN! });
 const session = await ark.createClientSession({ ttlSeconds: 900 });
@@ -28,7 +28,7 @@ const session = await ark.createClientSession({ ttlSeconds: 900 });
 
 ```ts
 // Your frontend
-import { ArkClient } from "@ark/client";
+import { ArkClient } from "@nerdstackgrp/ark-client";
 
 const ark = new ArkClient({ token: session.token });
 ```
@@ -84,7 +84,7 @@ Every failure is an `ArkError` with a stable `code`, a `message`, and a
 `requestId` to quote in a support request.
 
 ```ts
-import { ArkError } from "@ark/client";
+import { ArkError } from "@nerdstackgrp/ark-client";
 
 try {
   await ark.files.upload(file);

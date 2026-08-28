@@ -2,7 +2,7 @@
  * Backend usage via the Ark REST API.
  */
 
-import { Ark } from "@ark/server";
+import { Ark } from "@nerdstackgrp/ark-server";
 
 const ark = new Ark({ token: process.env.ARK_API_TOKEN! });
 

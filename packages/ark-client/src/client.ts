@@ -2,7 +2,7 @@
  * `ArkClient` -- the Ark frontend SDK (§14, §17, §20).
  *
  * Framework-independent by design: no React, no Vue, no framework imports at
- * all. A thin `@ark/react` wrapper can be layered on later without this
+ * all. A thin `@nerdstackgrp/ark-react` wrapper can be layered on later without this
  * package changing.
  *
  * Security posture (§15): this client never holds provider credentials and has
@@ -23,7 +23,7 @@ import type {
   ArkImageOptions,
 } from "./types";
 
-const DEFAULT_BASE_URL = "https://api.ark.nerdstackgrp.com";
+const DEFAULT_BASE_URL = "https://ark.nerdstackgrp.com/api";
 
 /** An in-flight upload, so callers can cancel it (§45). */
 export type ArkUploadHandle = Promise<ArkFile> & { abort: () => void };
@@ -47,8 +47,8 @@ export class ArkClient {
       throw new ArkError({
         code: "UNAUTHORIZED",
         message:
-          "@ark/client does not accept S3 credentials. Use a short-lived Ark client session; " +
-          "for server-side S3 access use ArkS3 from @ark/server.",
+          "@nerdstackgrp/ark-client does not accept S3 credentials. Use a short-lived Ark client session; " +
+          "for server-side S3 access use ArkS3 from @nerdstackgrp/ark-server.",
       });
     }
 

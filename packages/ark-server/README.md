@@ -1,16 +1,16 @@
-# `@ark/server`
+# `@nerdstackgrp/ark-server`
 
 The Ark backend SDK. One package, two ways in: Ark's REST API, or any
 S3-compatible tooling.
 
 ```ts
-import { Ark, ArkS3 } from "@ark/server";
+import { Ark, ArkS3 } from "@nerdstackgrp/ark-server";
 ```
 
 ## Install
 
 ```bash
-npm install @ark/server
+npm install @nerdstackgrp/ark-server
 ```
 
 Runtimes: Node 20+, Bun. Signing uses WebCrypto, so Deno and Cloudflare
@@ -40,14 +40,14 @@ To let your frontend upload directly without exposing your token:
 
 ```ts
 const session = await ark.createClientSession({ ttlSeconds: 900 });
-// Hand session.token to the browser, use it with @ark/client.
+// Hand session.token to the browser, use it with @nerdstackgrp/ark-client.
 ```
 
 ## S3-compatible API
 
 ```ts
 const s3 = new ArkS3({
-  endpoint: "https://s3.ark.nerdstackgrp.com",
+  endpoint: "https://ark.nerdstackgrp.com/s3",
   accessKeyId: process.env.ARK_ACCESS_KEY_ID!,
   secretAccessKey: process.env.ARK_SECRET_ACCESS_KEY!,
   bucket: "product-media",
@@ -87,7 +87,7 @@ you are not required to use this package:
 import { S3Client } from "@aws-sdk/client-s3";
 
 const client = new S3Client({
-  endpoint: "https://s3.ark.nerdstackgrp.com",
+  endpoint: "https://ark.nerdstackgrp.com/s3",
   region: "auto",
   credentials: {
     accessKeyId: process.env.ARK_ACCESS_KEY_ID!,
@@ -98,7 +98,7 @@ const client = new S3Client({
 ```
 
 ```bash
-aws s3 ls s3://product-media --endpoint-url https://s3.ark.nerdstackgrp.com
+aws s3 ls s3://product-media --endpoint-url https://ark.nerdstackgrp.com/s3
 ```
 
 Supported operations: `PutObject`, `GetObject`, `HeadObject`, `DeleteObject`,
@@ -109,7 +109,7 @@ object versioning, ACLs, bucket policies, lifecycle rules, and tagging.
 ## Errors
 
 ```ts
-import { ArkError } from "@ark/server";
+import { ArkError } from "@nerdstackgrp/ark-server";
 
 try {
   await s3.getObject("missing.jpg");

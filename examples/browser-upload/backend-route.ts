@@ -6,7 +6,7 @@
  * read or delete a customer's files.
  */
 
-import { Ark } from "@ark/server";
+import { Ark } from "@nerdstackgrp/ark-server";
 
 const ark = new Ark({ token: process.env.ARK_API_TOKEN! });
 

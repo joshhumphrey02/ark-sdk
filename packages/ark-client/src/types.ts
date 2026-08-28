@@ -1,5 +1,5 @@
 /**
- * Public types for `@ark/client` (§46).
+ * Public types for `@nerdstackgrp/ark-client` (§46).
  *
  * These are Ark concepts, deliberately not storage concepts. Nothing here
  * exposes a bucket, a physical key, or which provider holds the bytes -- that
@@ -72,7 +72,7 @@ export type ArkErrorCode =
   | "INTERNAL_ERROR";
 
 export type ArkClientOptions = {
-  /** Ark API base URL, e.g. https://api.ark.nerdstackgrp.com */
+  /** Ark API base URL, e.g. https://ark.nerdstackgrp.com/api */
   baseUrl?: string;
   /**
    * A short-lived `arkc_…` client session, or an `ark_live_…` token in a

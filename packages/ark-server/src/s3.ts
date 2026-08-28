@@ -18,7 +18,7 @@ import type {
   ArkBucket,
 } from "./types";
 
-const DEFAULT_ENDPOINT = "https://s3.ark.nerdstackgrp.com";
+const DEFAULT_ENDPOINT = "https://ark.nerdstackgrp.com/s3";
 
 /**
  * Ark's gateway is region-agnostic, but SigV4 requires *some* region in the

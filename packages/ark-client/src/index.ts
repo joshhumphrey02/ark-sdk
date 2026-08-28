@@ -1,8 +1,8 @@
 /**
- * `@ark/client` -- the Ark frontend SDK.
+ * `@nerdstackgrp/ark-client` -- the Ark frontend SDK.
  *
  * ```ts
- * import { ArkClient } from "@ark/client";
+ * import { ArkClient } from "@nerdstackgrp/ark-client";
  *
  * const ark = new ArkClient({ token: ephemeralArkToken });
  * const file = await ark.files.upload(selectedFile, {

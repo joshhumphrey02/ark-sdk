@@ -1,10 +1,10 @@
 /**
- * `@ark/server` -- the Ark backend SDK.
+ * `@nerdstackgrp/ark-server` -- the Ark backend SDK.
  *
  * One package, two ways in (§24):
  *
  * ```ts
- * import { Ark, ArkS3 } from "@ark/server";
+ * import { Ark, ArkS3 } from "@nerdstackgrp/ark-server";
  *
  * const ark = new Ark({ token: process.env.ARK_API_TOKEN! });
  * const s3  = new ArkS3({
