@@ -2,7 +2,7 @@
   "name": "ark-sdk",
   "private": true,
   "version": "0.0.0",
-  "description": "Monorepo for the Ark TypeScript SDKs.",
+  "description": "Monorepo for the Ark TypeScript and Python SDKs.",
   "type": "module",
   "workspaces": [
     "packages/*"

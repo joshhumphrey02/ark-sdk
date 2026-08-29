@@ -1,0 +1,69 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nerdstack-ark"
+version = "1.0.0"
+description = "Official Python SDK for Ark storage, with sync, async, and S3-compatible access."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "Nerdstack" }]
+keywords = ["ark", "storage", "upload", "s3", "django", "flask", "fastapi"]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Framework :: AsyncIO",
+  "Framework :: Django",
+  "Framework :: FastAPI",
+  "Framework :: Flask",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Typing :: Typed",
+]
+dependencies = ["httpx>=0.27,<1"]
+
+[project.optional-dependencies]
+s3 = ["boto3>=1.35,<2"]
+django = ["Django>=4.2"]
+flask = ["Flask>=2.3"]
+fastapi = ["fastapi>=0.110"]
+dev = [
+  "build>=1.2",
+  "mypy>=1.11",
+  "pytest>=8.3",
+  "pytest-asyncio>=0.24",
+  "ruff>=0.9",
+  "twine>=6.0",
+]
+
+[project.urls]
+Homepage = "https://ark.nerdstackgrp.com"
+Documentation = "https://github.com/joshhumphrey02/ark-sdk/tree/master/packages/ark-py#readme"
+Repository = "https://github.com/joshhumphrey02/ark-sdk"
+Issues = "https://github.com/joshhumphrey02/ark-sdk/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ark_py"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+packages = ["ark_py"]
+mypy_path = "src"

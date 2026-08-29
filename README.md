@@ -1,8 +1,8 @@
 # ark-sdk
 
-TypeScript SDKs for Ark storage. One repo, two surfaces: `@nerdstackgrp/ark-client` for
-direct browser uploads, `@nerdstackgrp/ark-server` for backend REST and S3-compatible
-access.
+SDKs for Ark storage. One repo, three surfaces: `@nerdstackgrp/ark-client` for direct
+browser uploads, `@nerdstackgrp/ark-server` for TypeScript backends, and
+`nerdstack-ark` for Python frameworks and workers.
 
 ## Install
 
@@ -71,6 +71,19 @@ streams; the declared size must match the bytes produced.
 
 The S3 endpoint also works with the official AWS SDK, AWS CLI, and rclone.
 
+### `nerdstack-ark` for Python
+
+The [`packages/ark-py/`](packages/ark-py) package provides synchronous and asynchronous Ark
+clients for Django, Flask, FastAPI, Celery, scripts, and workers, plus optional
+boto3 configuration for Ark's S3-compatible endpoint.
+
+```python
+from ark_py import Ark, AsyncArk
+
+with Ark(token) as ark:
+    file = ark.files.upload("./photo.jpg")
+```
+
 ## Security model
 
 - Browser uploads use short-lived, scoped sessions minted from your backend.
@@ -82,7 +95,8 @@ The S3 endpoint also works with the official AWS SDK, AWS CLI, and rclone.
 
 ## Requirements
 
-Node.js >= 20. Both packages are ESM and ship as TypeScript.
+The TypeScript packages require Node.js >= 20 and ship ESM, CommonJS, and declarations.
+`nerdstack-ark` requires Python >= 3.10 and includes a PEP 561 typing marker.
 
 ## Examples
 
@@ -99,11 +113,16 @@ Node.js >= 20. Both packages are ESM and ship as TypeScript.
 npm install        # installs workspaces
 npm run typecheck  # tsc --noEmit, both packages
 npm run build      # tsup -> dist/ (ESM + CJS + .d.ts)
+
+cd packages/ark-py
+python -m pip install -e ".[dev]"
+pytest
+python -m build
 ```
 
 ## Releasing
 
-Both packages are versioned and published together.
+The npm packages are versioned and published together.
 
 ```bash
 npm version <patch|minor|major> --workspaces
@@ -112,6 +131,9 @@ npm publish --workspaces --access public
 ```
 
 `prepublishOnly` rebuilds each package, so a stale `dist/` cannot be published.
+
+Publish the Python package separately from `packages/ark-py` with
+`python -m twine upload dist/*`.
 
 ## License
 

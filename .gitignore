@@ -5,3 +5,14 @@ dist/
 .DS_Store
 .env
 .env.local
+.venv/
+packages/ark-py/.venv/
+packages/ark-py/.mypy_cache/
+packages/ark-py/.pytest_cache/
+packages/ark-py/.ruff_cache/
+packages/ark-py/build/
+packages/ark-py/dist/
+packages/ark-py/*.egg-info/
+packages/ark-py/src/*.egg-info/
+__pycache__/
+*.py[cod]
