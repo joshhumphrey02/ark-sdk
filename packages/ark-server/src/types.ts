@@ -35,6 +35,24 @@ export type WatermarkPosition = "top-left" | "top-center" | "top-right" | "cente
 export type ArkImageOptions = { width?: number; height?: number; quality?: number; format?: ImageFormat; thumbnail?: boolean; watermark?: boolean };
 export type ArkImportInput = { appId: string; sourceType: "s3" | "r2" | "bunny" | "minio" | "s3_compatible" | "url"; endpoint?: string; region?: string; bucket?: string; prefix?: string; url?: string; accessKey?: string; secretKey?: string; conflictStrategy?: "skip" | "rename" | "overwrite" };
 
+/** A one-shot byte stream accepted by the server-side upload helper. */
+export type ArkUploadStream =
+  | ReadableStream<Uint8Array>
+  | AsyncIterable<Uint8Array>;
+
+export type ArkUploadOptions = {
+  filename?: string;
+  contentType?: string;
+  folderId?: string | null;
+  metadata?: Record<string, unknown>;
+};
+
+export type ArkUploadStreamOptions = Omit<ArkUploadOptions, "filename"> & {
+  /** Exact byte length, required for quota reservation and multipart planning. */
+  size: number;
+  filename: string;
+};
+
 export type ArkBucket = {
   name: string;
   createdAt: string;
@@ -62,6 +80,7 @@ export type ArkMultipartSession = {
 
 export type ArkOptions = {
   token: string;
+  /** Ark service origin, e.g. https://ark.nerdstackgrp.com. */
   baseUrl?: string;
   version?: string;
   fetch?: typeof fetch;

@@ -72,7 +72,7 @@ export type ArkErrorCode =
   | "INTERNAL_ERROR";
 
 export type ArkClientOptions = {
-  /** Ark API base URL, e.g. https://ark.nerdstackgrp.com/api */
+  /** Ark service origin, e.g. https://ark.nerdstackgrp.com */
   baseUrl?: string;
   /**
    * A short-lived `arkc_…` client session, or an `ark_live_…` token in a

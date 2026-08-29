@@ -32,7 +32,27 @@ const usage = await ark.usage();
 ```
 
 `upload` accepts a path, a `Uint8Array`, or a `Blob`, and handles multipart
-transparently.
+transparently. Paths and blobs are streamed in bounded ranges rather than read
+into memory in full.
+
+For a custom Node or Web stream, provide its exact size so Ark can reserve
+quota and plan multipart uploads before transferring bytes:
+
+```ts
+import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
+
+const path = "./large-video.mp4";
+const { size } = await stat(path);
+const file = await ark.files.uploadStream(createReadStream(path), {
+  size,
+  filename: "large-video.mp4",
+  contentType: "video/mp4",
+});
+```
+
+The stream must produce exactly `size` bytes. Ark rejects underflow or overflow
+and aborts the server-side upload session so its quota reservation is released.
 
 ### Browser sessions
 

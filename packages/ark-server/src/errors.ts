@@ -7,6 +7,7 @@
  */
 
 export type ArkErrorCode =
+  | "INVALID_ARGUMENT"
   | "UNAUTHORIZED"
   | "INSUFFICIENT_SCOPE"
   | "ACCESS_DENIED"

@@ -26,6 +26,71 @@ const DEFAULT_ENDPOINT = "https://ark.nerdstackgrp.com/s3";
  * what R2 uses and what the AWS SDK sends when configured for Ark.
  */
 const DEFAULT_REGION = "auto";
+const MAX_PRESIGN_TTL_SECONDS = 7 * 24 * 60 * 60;
+const BUCKET_NAME = /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/;
+
+function invalidArgument(message: string) {
+  return new ArkError({ code: "INVALID_ARGUMENT", message });
+}
+
+function assertValidBucketName(name: string) {
+  if (
+    !BUCKET_NAME.test(name) ||
+    name.includes("..") ||
+    /^\d+\.\d+\.\d+\.\d+$/.test(name)
+  ) {
+    throw invalidArgument(`Invalid bucket name: ${name}`);
+  }
+}
+
+function assertSafeObjectKey(key: string) {
+  if (!key || key.length > 1024) {
+    throw invalidArgument("Object key must be 1-1024 characters");
+  }
+  if (key.includes("\0") || key.split("/").some((segment) => segment === "..")) {
+    throw invalidArgument("Object key must not contain null bytes or '..' path segments");
+  }
+}
+
+function presignTtl(value: number | undefined) {
+  const ttl = value ?? 900;
+  if (!Number.isInteger(ttl) || ttl < 1 || ttl > MAX_PRESIGN_TTL_SECONDS) {
+    throw invalidArgument(
+      `expiresInSeconds must be an integer between 1 and ${MAX_PRESIGN_TTL_SECONDS}`,
+    );
+  }
+  return ttl;
+}
+
+function escapeXmlText(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function decodeXmlText(value: string) {
+  return value.replace(
+    /&(amp|lt|gt|quot|apos|#\d+|#x[0-9a-f]+);/gi,
+    (entity, code: string) => {
+      switch (code.toLowerCase()) {
+        case "amp": return "&";
+        case "lt": return "<";
+        case "gt": return ">";
+        case "quot": return '"';
+        case "apos": return "'";
+        default: {
+          const numeric = code[1]?.toLowerCase() === "x"
+            ? Number.parseInt(code.slice(2), 16)
+            : Number.parseInt(code.slice(1), 10);
+          return Number.isInteger(numeric) && numeric >= 0 && numeric <= 0x10ffff
+            ? String.fromCodePoint(numeric)
+            : entity;
+        }
+      }
+    },
+  );
+}
 
 export class ArkS3 {
   readonly #endpoint: string;
@@ -58,15 +123,18 @@ export class ArkS3 {
         message: "A bucket must be supplied, either per call or via the constructor",
       });
     }
+    assertValidBucketName(name);
     return name;
   }
 
   /** Path-style addressing, which is what the gateway serves. */
   #url(bucket: string | null, key?: string, query?: Record<string, string>) {
+    if (bucket !== null) assertValidBucketName(bucket);
+    if (key !== undefined) assertSafeObjectKey(key);
     const path = bucket
-      ? key
-        ? `/${bucket}/${key.split("/").map(encodeURIComponent).join("/")}`
-        : `/${bucket}`
+      ? key !== undefined
+        ? `/${encodeURIComponent(bucket)}/${key.split("/").map(encodeURIComponent).join("/")}`
+        : `/${encodeURIComponent(bucket)}`
       : "/";
     const url = new URL(`${this.#endpoint}${path}`);
     for (const [k, v] of Object.entries(query ?? {})) url.searchParams.set(k, v);
@@ -218,7 +286,7 @@ export class ArkS3 {
     const pattern = /<Bucket>[\s\S]*?<Name>([^<]+)<\/Name>[\s\S]*?<CreationDate>([^<]+)<\/CreationDate>[\s\S]*?<\/Bucket>/g;
     let match: RegExpExecArray | null;
     while ((match = pattern.exec(xml)) !== null) {
-      buckets.push({ name: match[1]!, createdAt: match[2]! });
+      buckets.push({ name: decodeXmlText(match[1]!), createdAt: match[2]! });
     }
     return buckets;
   }
@@ -249,7 +317,7 @@ export class ArkS3 {
     if (!uploadId) {
       throw new ArkError({ code: "INTERNAL_ERROR", message: "No upload id returned" });
     }
-    return { uploadId };
+    return { uploadId: decodeXmlText(uploadId) };
   }
 
   async uploadPart(input: {
@@ -281,6 +349,11 @@ export class ArkS3 {
     parts: { partNumber: number; etag: string }[];
     bucket?: string;
   }) {
+    for (const part of input.parts) {
+      if (!Number.isInteger(part.partNumber) || part.partNumber < 1 || !part.etag) {
+        throw invalidArgument("Multipart parts require a positive partNumber and non-empty ETag");
+      }
+    }
     const body =
       `<CompleteMultipartUpload>` +
       input.parts
@@ -289,7 +362,7 @@ export class ArkS3 {
         .map(
           (p) =>
             `<Part><PartNumber>${p.partNumber}</PartNumber>` +
-            `<ETag>"${p.etag.replace(/"/g, "")}"</ETag></Part>`,
+            `<ETag>"${escapeXmlText(p.etag.replace(/"/g, ""))}"</ETag></Part>`,
         )
         .join("") +
       `</CompleteMultipartUpload>`;
@@ -327,7 +400,7 @@ export class ArkS3 {
       accessKeyId: this.#accessKeyId,
       secretAccessKey: this.#secretAccessKey,
       region: this.#region,
-      expiresInSeconds: options.expiresInSeconds ?? 900,
+      expiresInSeconds: presignTtl(options.expiresInSeconds),
     });
   }
 
@@ -338,7 +411,7 @@ export class ArkS3 {
       accessKeyId: this.#accessKeyId,
       secretAccessKey: this.#secretAccessKey,
       region: this.#region,
-      expiresInSeconds: options.expiresInSeconds ?? 900,
+      expiresInSeconds: presignTtl(options.expiresInSeconds),
     });
   }
 }
@@ -350,22 +423,25 @@ function parseListResult(xml: string) {
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(xml)) !== null) {
     objects.push({
-      key: match[1]!,
+      key: decodeXmlText(match[1]!),
       lastModified: match[2] ? new Date(match[2]) : null,
-      etag: match[3] || null,
+      etag: match[3] ? decodeXmlText(match[3]).replace(/^"|"$/g, "") : null,
       size: Number(match[4]),
     });
   }
 
   const prefixes: string[] = [];
   const prefixPattern = /<CommonPrefixes><Prefix>([^<]+)<\/Prefix><\/CommonPrefixes>/g;
-  while ((match = prefixPattern.exec(xml)) !== null) prefixes.push(match[1]!);
+  while ((match = prefixPattern.exec(xml)) !== null) prefixes.push(decodeXmlText(match[1]!));
 
   return {
     objects,
     prefixes,
     isTruncated: /<IsTruncated>true<\/IsTruncated>/.test(xml),
     nextContinuationToken:
-      /<NextContinuationToken>([^<]+)<\/NextContinuationToken>/.exec(xml)?.[1] ?? null,
+      (() => {
+        const token = /<NextContinuationToken>([^<]+)<\/NextContinuationToken>/.exec(xml)?.[1];
+        return token ? decodeXmlText(token) : null;
+      })(),
   };
 }

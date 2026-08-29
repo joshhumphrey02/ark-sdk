@@ -23,7 +23,11 @@ import type {
   ArkImageOptions,
 } from "./types";
 
-const DEFAULT_BASE_URL = "https://ark.nerdstackgrp.com/api";
+const DEFAULT_BASE_URL = "https://ark.nerdstackgrp.com";
+
+function pathSegment(value: string) {
+  return encodeURIComponent(value);
+}
 
 /** An in-flight upload, so callers can cancel it (§45). */
 export type ArkUploadHandle = Promise<ArkFile> & { abort: () => void };
@@ -72,7 +76,7 @@ export class ArkClient {
 
   /** Endpoints are composed from a single place so nothing hardcodes /v2 (§56). */
   #url(path: string) {
-    return `${this.#baseUrl}/api/${this.#version}${path}`;
+    return `${this.#baseUrl}/api/${pathSegment(this.#version)}${path}`;
   }
 
   async #request<T>(
@@ -108,22 +112,22 @@ export class ArkClient {
       );
     },
 
-    get: (fileId: string) => this.#request<ArkFile>(`/files/${fileId}`),
+    get: (fileId: string) => this.#request<ArkFile>(`/files/${pathSegment(fileId)}`),
 
     delete: (fileId: string) =>
-      this.#request<{ id: string; deleted: boolean }>(`/files/${fileId}`, {
+      this.#request<{ id: string; deleted: boolean }>(`/files/${pathSegment(fileId)}`, {
         method: "DELETE",
       }),
 
     /** Move or rename. The stored object is untouched (§30). */
     move: (fileId: string, input: { folderId: string | null }) =>
-      this.#request<ArkFile>(`/files/${fileId}`, {
+      this.#request<ArkFile>(`/files/${pathSegment(fileId)}`, {
         method: "PATCH",
         body: JSON.stringify({ folderId: input.folderId }),
       }),
 
     rename: (fileId: string, name: string) =>
-      this.#request<ArkFile>(`/files/${fileId}`, {
+      this.#request<ArkFile>(`/files/${pathSegment(fileId)}`, {
         method: "PATCH",
         body: JSON.stringify({ name }),
       }),
@@ -149,9 +153,13 @@ export class ArkClient {
     upload: (file: File | Blob, options: ArkUploadOptions = {}): ArkUploadHandle => {
       const controller = new AbortController();
       // Chain the caller's signal so either source can cancel.
-      options.signal?.addEventListener("abort", () => controller.abort(), { once: true });
+      const abortFromCaller = () => controller.abort(options.signal?.reason);
+      if (options.signal?.aborted) controller.abort(options.signal.reason);
+      else options.signal?.addEventListener("abort", abortFromCaller, { once: true });
 
-      const promise = this.#upload(file, options, controller.signal) as ArkUploadHandle;
+      const promise = this.#upload(file, options, controller.signal).finally(() => {
+        options.signal?.removeEventListener("abort", abortFromCaller);
+      }) as ArkUploadHandle;
       promise.abort = () => controller.abort();
       return promise;
     },
@@ -168,7 +176,7 @@ export class ArkClient {
         body: JSON.stringify(input),
       }),
     rename: (folderId: string, name: string) =>
-      this.#request<ArkFolder>(`/folders/${folderId}`, {
+      this.#request<ArkFolder>(`/folders/${pathSegment(folderId)}`, {
         method: "PATCH",
         body: JSON.stringify({ name }),
       }),
@@ -218,16 +226,16 @@ export class ArkClient {
 
       // §13: only now, after Ark has verified the stored object, does the file
       // become available. A presigned URL alone never means "uploaded".
-      return await this.#request<ArkFile>(`/uploads/${session.uploadId}/complete`, {
+      return await this.#request<ArkFile>(`/uploads/${pathSegment(session.uploadId)}/complete`, {
         method: "POST",
         body: JSON.stringify({ parts }),
       });
     } catch (error) {
       // Release the server-side session and its quota hold. Best-effort: the
       // original failure is what the caller needs to see.
-      void this.#request(`/uploads/${session.uploadId}/abort`, { method: "POST" }).catch(
-        () => {},
-      );
+      await this.#request(`/uploads/${pathSegment(session.uploadId)}/abort`, {
+        method: "POST",
+      }).catch(() => {});
       throw error;
     }
   }
@@ -265,6 +273,10 @@ export class ArkClient {
     report: (bytes: number) => void,
     signal: AbortSignal,
   ) {
+    const controller = new AbortController();
+    const abortFromCaller = () => controller.abort(signal.reason);
+    if (signal.aborted) controller.abort(signal.reason);
+    else signal.addEventListener("abort", abortFromCaller, { once: true });
     const uploadedPerPart = new Map<number, number>();
     const etags: { partNumber: number; etag: string }[] = [];
     const queue = [...session.parts];
@@ -272,7 +284,9 @@ export class ArkClient {
 
     const worker = async () => {
       while (queue.length > 0) {
-        if (signal.aborted) throw new ArkError({ code: "UPLOAD_ABORTED", message: "Aborted" });
+        if (controller.signal.aborted) {
+          throw new ArkError({ code: "UPLOAD_ABORTED", message: "Aborted" });
+        }
         const part = queue.shift();
         if (!part) return;
         const start = (part.partNumber - 1) * session.partSize;
@@ -287,7 +301,7 @@ export class ArkClient {
             for (const value of uploadedPerPart.values()) total += value;
             report(total);
           },
-          signal,
+          signal: controller.signal,
           fetchImpl: this.#fetch,
         });
         if (result.status < 200 || result.status >= 300) {
@@ -304,10 +318,21 @@ export class ArkClient {
       }
     };
 
-    await Promise.all(Array.from({ length: concurrency }, worker));
-    report(file.size);
-    // S3 requires parts in ascending order at completion.
-    return etags.sort((a, b) => a.partNumber - b.partNumber);
+    try {
+      await Promise.all(Array.from({ length: concurrency }, async () => {
+        try {
+          await worker();
+        } catch (error) {
+          controller.abort(error);
+          throw error;
+        }
+      }));
+      report(file.size);
+      // S3 requires parts in ascending order at completion.
+      return etags.sort((a, b) => a.partNumber - b.partNumber);
+    } finally {
+      signal.removeEventListener("abort", abortFromCaller);
+    }
   }
 }
 
@@ -319,7 +344,7 @@ function imageUrl(baseUrl: string, version: string, assetId: string, options: Ar
   if (options.format && options.format !== "original") query.set("format", options.format);
   if (options.thumbnail) query.set("thumbnail", "1");
   if (options.watermark) query.set("watermark", "1");
-  return `${baseUrl}/api/${version}/assets/${encodeURIComponent(assetId)}/image${query.size ? `?${query}` : ""}`;
+  return `${baseUrl}/api/${pathSegment(version)}/assets/${pathSegment(assetId)}/image${query.size ? `?${query}` : ""}`;
 }
 
 function isBrowser() {

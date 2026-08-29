@@ -33,6 +33,9 @@ export type {
   ArkUsage,
   ArkImageOptions,
   ArkImportInput,
+  ArkUploadOptions,
+  ArkUploadStream,
+  ArkUploadStreamOptions,
   ImageFormat,
   WatermarkPosition,
 } from "./types";

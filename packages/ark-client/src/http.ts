@@ -65,15 +65,19 @@ export async function requestWithRetry(
 
 function sleep(ms: number, signal?: AbortSignal) {
   return new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(resolve, ms);
-    signal?.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timer);
-        reject(new ArkError({ code: "UPLOAD_ABORTED", message: "Aborted" }));
-      },
-      { once: true },
-    );
+    if (signal?.aborted) {
+      reject(new ArkError({ code: "UPLOAD_ABORTED", message: "Aborted" }));
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new ArkError({ code: "UPLOAD_ABORTED", message: "Aborted" }));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 
@@ -94,6 +98,9 @@ export function putWithProgress(input: {
   signal?: AbortSignal;
   fetchImpl?: typeof fetch;
 }): Promise<{ status: number; etag: string | null }> {
+  if (input.signal?.aborted) {
+    return Promise.reject(new ArkError({ code: "UPLOAD_ABORTED", message: "Upload aborted" }));
+  }
   const hasXhr = typeof XMLHttpRequest !== "undefined";
   if (!hasXhr || !input.onProgress) {
     const doFetch = input.fetchImpl ?? fetch;
@@ -110,6 +117,8 @@ export function putWithProgress(input: {
 
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    const onAbort = () => xhr.abort();
+    const cleanup = () => input.signal?.removeEventListener("abort", onAbort);
     xhr.open("PUT", input.url, true);
     for (const [key, value] of Object.entries(input.headers ?? {})) {
       xhr.setRequestHeader(key, value);
@@ -117,16 +126,22 @@ export function putWithProgress(input: {
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable) input.onProgress?.(event.loaded, event.total);
     };
-    xhr.onload = () =>
+    xhr.onload = () => {
+      cleanup();
       resolve({
         status: xhr.status,
         etag: (xhr.getResponseHeader("etag") || "").replace(/"/g, "") || null,
       });
-    xhr.onerror = () =>
+    };
+    xhr.onerror = () => {
+      cleanup();
       reject(new ArkError({ code: "NETWORK_ERROR", message: "Upload connection failed" }));
-    xhr.onabort = () =>
+    };
+    xhr.onabort = () => {
+      cleanup();
       reject(new ArkError({ code: "UPLOAD_ABORTED", message: "Upload aborted" }));
-    input.signal?.addEventListener("abort", () => xhr.abort(), { once: true });
+    };
+    input.signal?.addEventListener("abort", onAbort, { once: true });
     xhr.send(input.body as XMLHttpRequestBodyInit);
   });
 }

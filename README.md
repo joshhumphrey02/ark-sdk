@@ -65,6 +65,10 @@ await s3.listObjects({ prefix: "photos/" });
 await s3.presignGet("photo.jpg", { expiresInSeconds: 900 });
 ```
 
+Filesystem paths and blobs upload without loading the whole object into memory.
+Use `ark.files.uploadStream(stream, { size, filename })` for custom Node or Web
+streams; the declared size must match the bytes produced.
+
 The S3 endpoint also works with the official AWS SDK, AWS CLI, and rclone.
 
 ## Security model
