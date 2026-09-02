@@ -15,7 +15,15 @@ class ArkFile:
     folder_id: str | None
     status: str
     checksum: str | None
+    #: Permanent, unsigned CDN delivery URL. Safe to store; it does not expire.
+    #: Use this value as-is -- never build a URL from the id or name, and never
+    #: append a query parameter to reach a variant. ``thumbnail_url`` is the
+    #: thumbnail.
     url: str
+    #: Permanent CDN URL for the generated thumbnail, or None if there is none.
+    thumbnail_url: str | None
+    #: Permanent CDN URL for the compressed variant, or None if there is none.
+    compressed_url: str | None
     created_at: str | None
 
     @classmethod
@@ -30,6 +38,8 @@ class ArkFile:
             status=str(value.get("status") or "available"),
             checksum=_optional_string(value.get("checksum")),
             url=str(value.get("url") or ""),
+            thumbnail_url=_optional_string(value.get("thumbnailUrl")),
+            compressed_url=_optional_string(value.get("compressedUrl")),
             created_at=_optional_string(value.get("createdAt")),
         )
 

@@ -15,7 +15,18 @@ export type ArkFile = {
   folderId: string | null;
   status: string;
   checksum: string | null;
+  /**
+   * Permanent, unsigned CDN delivery URL. Safe to store; it does not expire.
+   *
+   * Always use this value as-is. Do not build a URL from the id, the name, or
+   * any other field, and do not append query parameters to reach a variant --
+   * `thumbnailUrl` is the thumbnail.
+   */
   url: string;
+  /** Permanent CDN URL for the generated thumbnail, or null if there is none. */
+  thumbnailUrl: string | null;
+  /** Permanent CDN URL for the compressed variant, or null if there is none. */
+  compressedUrl: string | null;
   createdAt: string | null;
 };
 
