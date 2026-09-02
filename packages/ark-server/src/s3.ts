@@ -15,6 +15,7 @@ import type {
   ArkListedObject,
   ArkObjectMetadata,
   ArkS3Options,
+  ArkS3WriteResult,
   ArkBucket,
 } from "./types";
 
@@ -90,6 +91,29 @@ function decodeXmlText(value: string) {
       }
     },
   );
+}
+
+function decodedHeader(response: Response, name: string) {
+  const value = response.headers.get(name);
+  if (!value) return null;
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function writeResult(
+  response: Response,
+  etag: string,
+  fallbackUrl: string | null = null,
+): ArkS3WriteResult {
+  return {
+    etag: etag.replace(/"/g, ""),
+    url: response.headers.get("x-ark-url") || fallbackUrl,
+    assetId: response.headers.get("x-ark-asset-id"),
+    objectKey: decodedHeader(response, "x-ark-object-key"),
+  };
 }
 
 export class ArkS3 {
@@ -207,7 +231,7 @@ export class ArkS3 {
       },
       expectedStatus: [200],
     });
-    return { etag: (response.headers.get("etag") || "").replace(/"/g, "") };
+    return writeResult(response, response.headers.get("etag") || "");
   }
 
   async getObject(key: string, options: { bucket?: string } = {}) {
@@ -377,7 +401,9 @@ export class ArkS3 {
       expectedStatus: [200],
     });
     const xml = await response.text();
-    return { etag: (/<ETag>"?([^"<]+)"?<\/ETag>/.exec(xml)?.[1] ?? "").trim() };
+    const etag = (/<ETag>"?([^"<]+)"?<\/ETag>/.exec(xml)?.[1] ?? "").trim();
+    const location = /<Location>([^<]+)<\/Location>/.exec(xml)?.[1];
+    return writeResult(response, etag, location ? decodeXmlText(location) : null);
   }
 
   async abortMultipartUpload(input: { key: string; uploadId: string; bucket?: string }) {

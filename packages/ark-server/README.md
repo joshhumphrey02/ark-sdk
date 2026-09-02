@@ -73,7 +73,10 @@ const s3 = new ArkS3({
   bucket: "product-media",
 });
 
-await s3.putObject("photo.jpg", bytes, { contentType: "image/jpeg" });
+const stored = await s3.putObject("photo.jpg", bytes, { contentType: "image/jpeg" });
+// `stored.url` is Ark's stable delivery URL. It uses the canonical physical
+// object identity, not the logical S3 key supplied above.
+console.log(stored.url, stored.assetId, stored.objectKey);
 const data = await s3.getObject("photo.jpg");
 const meta = await s3.headObject("photo.jpg");
 const { objects } = await s3.listObjects({ prefix: "photos/", delimiter: "/" });

@@ -76,6 +76,32 @@ test("ArkS3 rejects bucket and key path traversal before fetch", async () => {
   assert.equal(requests, 0);
 });
 
+test("ArkS3 returns Ark's canonical identity after a committed PUT", async () => {
+  const physicalKey = "apps/app-id/buckets/bucket-id/objects/asset-id/photo.jpg";
+  const canonicalUrl = `https://cdn.nerdstackgrp.com/${physicalKey}`;
+  const s3 = new ArkS3({
+    accessKeyId: "ARKAKIATEST",
+    secretAccessKey: "secret",
+    bucket: "valid-bucket",
+    fetch: async () => new Response(null, {
+      status: 200,
+      headers: {
+        etag: '"etag-1"',
+        "x-ark-asset-id": "asset-id",
+        "x-ark-object-key": encodeURIComponent(physicalKey),
+        "x-ark-url": canonicalUrl,
+      },
+    }),
+  });
+
+  assert.deepEqual(await s3.putObject("admin/photo.jpg", "bytes"), {
+    etag: "etag-1",
+    assetId: "asset-id",
+    objectKey: physicalKey,
+    url: canonicalUrl,
+  });
+});
+
 test("ArkS3 validates presign TTLs", () => {
   const s3 = new ArkS3({
     accessKeyId: "ARKAKIATEST",

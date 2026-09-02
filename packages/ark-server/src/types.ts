@@ -65,6 +65,16 @@ export type ArkObjectMetadata = {
   lastModified: Date | null;
 };
 
+/** Canonical identity Ark returns after an S3 write has been committed. */
+export type ArkS3WriteResult = {
+  etag: string;
+  /** Stable delivery URL. Null when talking to an older Ark gateway. */
+  url: string | null;
+  assetId: string | null;
+  /** Ark's physical object key, distinct from the caller's logical S3 key. */
+  objectKey: string | null;
+};
+
 export type ArkListedObject = {
   key: string;
   size: number;

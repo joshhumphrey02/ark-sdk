@@ -30,6 +30,7 @@ export type {
   ArkObjectMetadata,
   ArkOptions,
   ArkS3Options,
+  ArkS3WriteResult,
   ArkUsage,
   ArkImageOptions,
   ArkImportInput,
