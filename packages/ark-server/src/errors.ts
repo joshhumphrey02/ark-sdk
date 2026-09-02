@@ -56,14 +56,43 @@ const S3_CODES: Record<string, ArkErrorCode> = {
   SlowDown: "RATE_LIMITED",
 };
 
-/** Extracts `<Code>`/`<Message>` without pulling in an XML parser. */
+/**
+ * Ark's own wording for each failure.
+ *
+ * Storage runs on third-party infrastructure, and their error bodies name the
+ * vendor and its internals. Callers integrate against Ark, so they are told
+ * what went wrong in Ark's terms; the upstream text is never passed through.
+ */
+const ARK_MESSAGES: Record<ArkErrorCode, string> = {
+  INVALID_ARGUMENT: "The request was not valid.",
+  UNAUTHORIZED: "These credentials are not valid.",
+  INSUFFICIENT_SCOPE: "These credentials do not allow this operation.",
+  ACCESS_DENIED: "This operation is not allowed.",
+  NOT_FOUND: "That resource does not exist.",
+  NO_SUCH_BUCKET: "That bucket does not exist.",
+  NO_SUCH_KEY: "That object does not exist.",
+  QUOTA_EXCEEDED: "This upload exceeds the storage available on your plan.",
+  SIGNATURE_INVALID:
+    "The request signature was not valid. Check the system clock and the credentials in use.",
+  RATE_LIMITED: "Too many requests. Retry shortly.",
+  NETWORK_ERROR: "The storage service could not be reached.",
+  INTERNAL_ERROR: "The storage service is temporarily unavailable.",
+};
+
+/**
+ * Extracts `<Code>` without pulling in an XML parser.
+ *
+ * `<Message>` is deliberately discarded: it is the storage vendor's prose,
+ * naming their product and infrastructure, and it reaches application users
+ * verbatim if surfaced. The code is mapped to Ark's own message instead.
+ */
 export function errorFromS3Xml(body: string, status: number): ArkError {
-  const code = /<Code>([^<]+)<\/Code>/.exec(body)?.[1] ?? "";
-  const message = /<Message>([^<]+)<\/Message>/.exec(body)?.[1] ?? "";
+  const rawCode = /<Code>([^<]+)<\/Code>/.exec(body)?.[1] ?? "";
   const requestId = /<RequestId>([^<]*)<\/RequestId>/.exec(body)?.[1] ?? null;
+  const code = S3_CODES[rawCode] || (status >= 500 ? "INTERNAL_ERROR" : "ACCESS_DENIED");
   return new ArkError({
-    code: S3_CODES[code] || (status >= 500 ? "INTERNAL_ERROR" : "ACCESS_DENIED"),
-    message: message || `S3 request failed with status ${status}`,
+    code,
+    message: ARK_MESSAGES[code],
     status,
     requestId,
   });

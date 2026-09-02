@@ -84,7 +84,8 @@ await s3.deleteObject("photo.jpg");
 ```
 
 These are **Ark** credentials, issued in your Ark dashboard. They are not
-Cloudflare or Bunny credentials, and they authenticate only against Ark.
+credentials for any underlying storage provider, and they authenticate only
+against Ark.
 
 ### Multipart
 
