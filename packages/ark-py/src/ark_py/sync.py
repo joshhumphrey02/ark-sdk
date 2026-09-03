@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import builtins
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import suppress
 from pathlib import Path
@@ -12,6 +12,8 @@ import httpx
 
 from ._shared import (
     DEFAULT_BASE_URL,
+    DEFAULT_VIDEO_CHUNK_SIZE,
+    MAX_VIDEO_CHUNK_RETRIES,
     UploadSource,
     api_url,
     ensure_stream_complete,
@@ -22,9 +24,12 @@ from ._shared import (
     query_string,
     read_exact,
     resolve_upload_source,
+    resumed_offset,
     segment,
     sorted_parts,
+    tus_metadata,
     upload_payload,
+    validate_chunk_size,
 )
 from .errors import ArkError, error_from_response, network_error, upload_error
 from .models import (
@@ -479,3 +484,145 @@ class Streams:
     def delete(self, stream_id: str, *, app_id: str | None = None) -> None:
         suffix = query_string({"appId": app_id})
         self._ark._request("DELETE", f"/streams/{segment(stream_id)}{suffix}")
+
+    def upload(
+        self,
+        source: str | Path | BinaryIO,
+        *,
+        title: str | None = None,
+        size: int | None = None,
+        filename: str | None = None,
+        content_type: str | None = None,
+        app_id: str | None = None,
+        collection_id: str | None = None,
+        chunk_size: int = DEFAULT_VIDEO_CHUNK_SIZE,
+        on_progress: Callable[[int, int], None] | None = None,
+    ) -> ArkStream:
+        """Create a stream and upload the video, resuming across failures.
+
+        `create()` only returns a ticket; the bytes still have to be sent, and
+        doing that correctly means speaking TUS. Without this a Python caller
+        had to implement the protocol themselves, which is the one part of
+        Streams they should not have to think about.
+
+        Returns the stream as it was at creation. Encoding continues afterwards,
+        so poll `get()` for `status == "ready"` before using the playback URLs.
+        """
+        validate_chunk_size(chunk_size)
+        resolved = resolve_upload_source(
+            source,
+            size=size,
+            filename=filename,
+            content_type=content_type or "video/mp4",
+        )
+
+        created = self.create(
+            title or Path(resolved.filename).stem,
+            resolved.size,
+            app_id=app_id,
+            collection_id=collection_id,
+        )
+
+        upload_url = self._create_tus_upload(created.upload.endpoint, resolved)
+        handle = resolved.path.open("rb") if resolved.path is not None else resolved.stream
+        try:
+            self._send_chunks(upload_url, handle, resolved.size, chunk_size, on_progress)
+        finally:
+            if resolved.path is not None:
+                handle.close()
+        return created.stream
+
+    def _create_tus_upload(self, endpoint: str, resolved: UploadSource) -> str:
+        """Open the TUS upload and return the URL to send chunks to."""
+        url = self._ark._url(endpoint) if endpoint.startswith("/") else endpoint
+        try:
+            response = self._ark._client.request(
+                "POST",
+                url,
+                headers={
+                    "authorization": f"Bearer {self._ark._token}",
+                    "Tus-Resumable": "1.0.0",
+                    "Upload-Length": str(resolved.size),
+                    "Upload-Metadata": (
+                        f"filename {tus_metadata(resolved.filename)},"
+                        f"filetype {tus_metadata(resolved.content_type)}"
+                    ),
+                },
+            )
+        except httpx.HTTPError as error:
+            raise network_error(error) from error
+        if response.is_error:
+            raise error_from_response(response)
+
+        location = response.headers.get("location")
+        if not location:
+            raise ArkError("INTERNAL_ERROR", "Ark did not return an upload location")
+        # The server may answer with a relative location.
+        return str(httpx.URL(url).join(location))
+
+    def _send_chunks(
+        self,
+        upload_url: str,
+        handle: BinaryIO,
+        total: int,
+        chunk_size: int,
+        on_progress: Callable[[int, int], None] | None,
+    ) -> None:
+        offset = 0
+        retries = 0
+        while offset < total:
+            handle.seek(offset)
+            chunk = handle.read(min(chunk_size, total - offset))
+            if not chunk:
+                raise ArkError(
+                    "INVALID_ARGUMENT",
+                    "The video source ended before the declared size was reached",
+                )
+            try:
+                response = self._ark._client.request(
+                    "PATCH",
+                    upload_url,
+                    headers={
+                        "authorization": f"Bearer {self._ark._token}",
+                        "Tus-Resumable": "1.0.0",
+                        "Upload-Offset": str(offset),
+                        "Content-Type": "application/offset+octet-stream",
+                    },
+                    content=chunk,
+                )
+                if response.is_error:
+                    raise error_from_response(response)
+                # Trust the server's acknowledged offset over our own arithmetic:
+                # it is the only party that knows what actually landed.
+                acknowledged = response.headers.get("upload-offset")
+                try:
+                    offset = max(offset + len(chunk), int(acknowledged or ""))
+                except ValueError:
+                    offset += len(chunk)
+                retries = 0
+                if on_progress is not None:
+                    on_progress(offset, total)
+            except ArkError as error:
+                if retries >= MAX_VIDEO_CHUNK_RETRIES:
+                    raise
+                retries += 1
+                # Ask what the server holds rather than assuming the chunk was
+                # lost -- a failure after the bytes landed would otherwise send
+                # them twice.
+                offset = self._head_offset(upload_url, total, error)
+
+    def _head_offset(self, upload_url: str, total: int, fallback: ArkError) -> int:
+        try:
+            head = self._ark._client.request(
+                "HEAD",
+                upload_url,
+                headers={
+                    "authorization": f"Bearer {self._ark._token}",
+                    "Tus-Resumable": "1.0.0",
+                },
+            )
+        except httpx.HTTPError:
+            raise fallback from None
+        if head.is_error:
+            raise fallback
+        return resumed_offset(head.headers.get("upload-offset"), total, fallback)

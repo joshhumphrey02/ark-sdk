@@ -4,8 +4,9 @@ import asyncio
 import builtins
 import mimetypes
 import os
-from collections.abc import AsyncIterable, AsyncIterator, Mapping
+from collections.abc import AsyncIterable, AsyncIterator, Callable, Mapping
 from contextlib import suppress
+from pathlib import Path
 from types import TracebackType
 from typing import Any, BinaryIO, TypeVar, cast
 
@@ -14,6 +15,8 @@ import httpx
 from ._shared import (
     DEFAULT_BASE_URL,
     DEFAULT_CONTENT_TYPE,
+    DEFAULT_VIDEO_CHUNK_SIZE,
+    MAX_VIDEO_CHUNK_RETRIES,
     UploadSource,
     api_url,
     image_url,
@@ -21,9 +24,12 @@ from ._shared import (
     query_string,
     read_exact,
     resolve_upload_source,
+    resumed_offset,
     segment,
     sorted_parts,
+    tus_metadata,
     upload_payload,
+    validate_chunk_size,
     validate_size,
 )
 from .errors import ArkError, error_from_response, invalid_argument, network_error, upload_error
@@ -524,6 +530,138 @@ class AsyncStreams:
     async def delete(self, stream_id: str, *, app_id: str | None = None) -> None:
         suffix = query_string({"appId": app_id})
         await self._ark._request("DELETE", f"/streams/{segment(stream_id)}{suffix}")
+
+    async def upload(
+        self,
+        source: str | Path | BinaryIO,
+        *,
+        title: str | None = None,
+        size: int | None = None,
+        filename: str | None = None,
+        content_type: str | None = None,
+        app_id: str | None = None,
+        collection_id: str | None = None,
+        chunk_size: int = DEFAULT_VIDEO_CHUNK_SIZE,
+        on_progress: Callable[[int, int], None] | None = None,
+    ) -> ArkStream:
+        """Create a stream and upload the video, resuming across failures.
+
+        The async twin of `Streams.upload`. See that method for why this exists
+        rather than leaving TUS to the caller.
+        """
+        validate_chunk_size(chunk_size)
+        resolved = resolve_upload_source(
+            source,
+            size=size,
+            filename=filename,
+            content_type=content_type or "video/mp4",
+        )
+
+        created = await self.create(
+            title or Path(resolved.filename).stem,
+            resolved.size,
+            app_id=app_id,
+            collection_id=collection_id,
+        )
+
+        upload_url = await self._create_tus_upload(created.upload.endpoint, resolved)
+        handle = resolved.path.open("rb") if resolved.path is not None else resolved.stream
+        try:
+            await self._send_chunks(
+                upload_url, handle, resolved.size, chunk_size, on_progress
+            )
+        finally:
+            if resolved.path is not None:
+                handle.close()
+        return created.stream
+
+    async def _create_tus_upload(self, endpoint: str, resolved: UploadSource) -> str:
+        url = self._ark._url(endpoint) if endpoint.startswith("/") else endpoint
+        try:
+            response = await self._ark._client.request(
+                "POST",
+                url,
+                headers={
+                    "authorization": f"Bearer {self._ark._token}",
+                    "Tus-Resumable": "1.0.0",
+                    "Upload-Length": str(resolved.size),
+                    "Upload-Metadata": (
+                        f"filename {tus_metadata(resolved.filename)},"
+                        f"filetype {tus_metadata(resolved.content_type)}"
+                    ),
+                },
+            )
+        except httpx.HTTPError as error:
+            raise network_error(error) from error
+        if response.is_error:
+            raise error_from_response(response)
+
+        location = response.headers.get("location")
+        if not location:
+            raise ArkError("INTERNAL_ERROR", "Ark did not return an upload location")
+        return str(httpx.URL(url).join(location))
+
+    async def _send_chunks(
+        self,
+        upload_url: str,
+        handle: BinaryIO,
+        total: int,
+        chunk_size: int,
+        on_progress: Callable[[int, int], None] | None,
+    ) -> None:
+        offset = 0
+        retries = 0
+        while offset < total:
+            handle.seek(offset)
+            chunk = handle.read(min(chunk_size, total - offset))
+            if not chunk:
+                raise ArkError(
+                    "INVALID_ARGUMENT",
+                    "The video source ended before the declared size was reached",
+                )
+            try:
+                response = await self._ark._client.request(
+                    "PATCH",
+                    upload_url,
+                    headers={
+                        "authorization": f"Bearer {self._ark._token}",
+                        "Tus-Resumable": "1.0.0",
+                        "Upload-Offset": str(offset),
+                        "Content-Type": "application/offset+octet-stream",
+                    },
+                    content=chunk,
+                )
+                if response.is_error:
+                    raise error_from_response(response)
+                acknowledged = response.headers.get("upload-offset")
+                try:
+                    offset = max(offset + len(chunk), int(acknowledged or ""))
+                except ValueError:
+                    offset += len(chunk)
+                retries = 0
+                if on_progress is not None:
+                    on_progress(offset, total)
+            except ArkError as error:
+                if retries >= MAX_VIDEO_CHUNK_RETRIES:
+                    raise
+                retries += 1
+                offset = await self._head_offset(upload_url, total, error)
+
+    async def _head_offset(self, upload_url: str, total: int, fallback: ArkError) -> int:
+        try:
+            head = await self._ark._client.request(
+                "HEAD",
+                upload_url,
+                headers={
+                    "authorization": f"Bearer {self._ark._token}",
+                    "Tus-Resumable": "1.0.0",
+                },
+            )
+        except httpx.HTTPError:
+            raise fallback from None
+        if head.is_error:
+            raise fallback
+        return resumed_offset(head.headers.get("upload-offset"), total, fallback)
 
 
 def _as_async_iterable(source: AsyncSource) -> AsyncIterator[bytes] | None:

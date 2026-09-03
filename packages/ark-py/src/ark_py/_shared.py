@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import mimetypes
 import os
 from collections.abc import Iterable, Iterator, Mapping
@@ -180,3 +181,46 @@ def sorted_parts(parts: Iterable[dict[str, object]]) -> list[dict[str, object]]:
         return value
 
     return sorted(parts, key=part_number)
+
+
+# --- Ark Streams resumable upload (TUS) -------------------------------------
+#
+# Video goes to the encoding network over TUS rather than through the presigned
+# path files use: an encode is long enough that a dropped connection is normal
+# rather than exceptional, so the protocol has to be able to say "you already
+# have the first N bytes, continue from there".
+
+#: TUS sends metadata as base64, so a filename with non-ASCII characters
+#: survives the header intact.
+def tus_metadata(value: str) -> str:
+    return base64.b64encode(value.encode("utf-8")).decode("ascii")
+
+
+#: Default slice sent per PATCH. Large enough that a long video is not thousands
+#: of round trips, small enough that a failure re-sends little.
+DEFAULT_VIDEO_CHUNK_SIZE = 64 * 1024 * 1024
+
+#: Consecutive failures tolerated per chunk before giving up. Each retry first
+#: asks the server what it actually holds, so a retry never duplicates bytes.
+MAX_VIDEO_CHUNK_RETRIES = 2
+
+
+def validate_chunk_size(chunk_size: int) -> None:
+    if isinstance(chunk_size, bool) or not isinstance(chunk_size, int) or chunk_size <= 0:
+        raise invalid_argument("chunk_size must be a positive integer")
+
+
+def resumed_offset(header: str | None, total: int, fallback: Exception) -> int:
+    """Read an Upload-Offset the server reported, or re-raise.
+
+    A server that answers with an offset past the end of the file, or with
+    something unparseable, cannot be resumed from safely -- continuing would
+    either skip bytes or corrupt the video.
+    """
+    try:
+        offset = int(header or "")
+    except ValueError:
+        raise fallback from None
+    if offset < 0 or offset > total:
+        raise fallback
+    return offset

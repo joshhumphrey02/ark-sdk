@@ -89,9 +89,21 @@ session = ark.create_client_session(ttl_seconds=900)
 
 ## Ark Streams
 
-Both synchronous and asynchronous clients expose the Ark Streams control
-plane. Creating a video returns a TUS endpoint for the client that owns the
-video bytes. A remote import is fetched directly by Ark's video provider.
+Both synchronous and asynchronous clients expose Ark Streams. `upload` is the
+one call most applications need: it creates the video and sends the bytes,
+resuming from the server's acknowledged offset if the connection drops.
+
+```python
+stream = ark.streams.upload(
+    "./launch.mp4",
+    title="Product launch",
+    app_id=app_id,
+    on_progress=lambda sent, total: print(f"{sent}/{total}"),
+)
+```
+
+Use `create` directly when the bytes belong to someone else -- a browser, or a
+worker -- and you only need the upload ticket:
 
 ```python
 creation = ark.streams.create("Product launch", size_bytes, app_id=app_id)
@@ -104,9 +116,10 @@ ark.streams.refresh_upload_url(stream.id, app_id=app_id)
 ark.streams.delete(stream.id, app_id=app_id)
 ```
 
-The same methods on `AsyncArk.streams` are awaitable. Poll `get` while a video
-is uploading or encoding; `hls_url` and `embed_url` are populated when its
-status becomes `ready`.
+The same methods on `AsyncArk.streams` are awaitable. Encoding continues after
+an upload returns, so poll `get` until `status` is `ready`; `hls_url`,
+`thumbnail_url` and `embed_url` are `None` until then. `embed_url` is an
+Ark-hosted player page that can go straight into an iframe.
 
 ## S3-compatible access
 
