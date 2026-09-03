@@ -27,7 +27,18 @@ from ._shared import (
     upload_payload,
 )
 from .errors import ArkError, error_from_response, network_error, upload_error
-from .models import ArkFile, ArkFolder, ArkUsage, ClientSession, FilePage, ImageOptions
+from .models import (
+    ArkFile,
+    ArkFolder,
+    ArkStream,
+    ArkUsage,
+    ClientSession,
+    FilePage,
+    ImageOptions,
+    StreamCreation,
+    StreamPage,
+    StreamUploadTicket,
+)
 
 T = TypeVar("T")
 
@@ -55,6 +66,7 @@ class Ark:
         self.folders = Folders(self)
         self.images = Images(self)
         self.imports = Imports(self)
+        self.streams = Streams(self)
 
     def __enter__(self) -> Ark:
         return self
@@ -379,3 +391,91 @@ class Imports:
     def cancel(self, import_id: str) -> bool:
         value = self._ark._request("POST", f"/imports/{segment(import_id)}/cancel", json={})
         return bool(value.get("cancelled"))
+
+
+class Streams:
+    """Ark Streams video creation, import, playback metadata, and lifecycle APIs."""
+
+    def __init__(self, ark: Ark) -> None:
+        self._ark = ark
+
+    def create(
+        self,
+        title: str,
+        size_bytes: int,
+        *,
+        app_id: str | None = None,
+        collection_id: str | None = None,
+    ) -> StreamCreation:
+        payload: dict[str, Any] = {"title": title, "sizeBytes": size_bytes}
+        if app_id is not None:
+            payload["appId"] = app_id
+        if collection_id is not None:
+            payload["collectionId"] = collection_id
+        value = self._ark._request("POST", "/streams", json=payload)
+        stream = value.get("stream")
+        upload = value.get("upload")
+        if not isinstance(stream, Mapping) or not isinstance(upload, Mapping):
+            raise ArkError("INTERNAL_ERROR", "Ark returned an invalid stream creation response")
+        return StreamCreation(
+            ArkStream.from_dict(stream),
+            StreamUploadTicket(str(upload["endpoint"])),
+        )
+
+    def import_from_url(
+        self,
+        title: str,
+        url: str,
+        *,
+        app_id: str | None = None,
+        access_token: str | None = None,
+        size_bytes: int | None = None,
+    ) -> ArkStream:
+        payload: dict[str, Any] = {"title": title, "url": url}
+        if app_id is not None:
+            payload["appId"] = app_id
+        if access_token is not None:
+            payload["accessToken"] = access_token
+        if size_bytes is not None:
+            payload["sizeBytes"] = size_bytes
+        return ArkStream.from_dict(self._ark._request("POST", "/streams/fetch", json=payload))
+
+    def list(
+        self,
+        *,
+        app_id: str | None = None,
+        limit: int | None = None,
+        cursor: str | None = None,
+    ) -> StreamPage:
+        suffix = query_string({"appId": app_id, "limit": limit, "cursor": cursor})
+        value = self._ark._request("GET", f"/streams{suffix}")
+        raw_streams = value.get("streams")
+        streams = tuple(
+            ArkStream.from_dict(item)
+            for item in (raw_streams if isinstance(raw_streams, list) else [])
+            if isinstance(item, Mapping)
+        )
+        next_cursor = value.get("nextCursor")
+        return StreamPage(streams, next_cursor if isinstance(next_cursor, str) else None)
+
+    def get(self, stream_id: str, *, app_id: str | None = None) -> ArkStream:
+        suffix = query_string({"appId": app_id})
+        return ArkStream.from_dict(
+            self._ark._request("GET", f"/streams/{segment(stream_id)}{suffix}")
+        )
+
+    def refresh_upload_url(
+        self,
+        stream_id: str,
+        *,
+        app_id: str | None = None,
+    ) -> StreamUploadTicket:
+        suffix = query_string({"appId": app_id})
+        value = self._ark._request(
+            "POST", f"/streams/{segment(stream_id)}/upload-url{suffix}", json={}
+        )
+        return StreamUploadTicket(str(value["endpoint"]))
+
+    def delete(self, stream_id: str, *, app_id: str | None = None) -> None:
+        suffix = query_string({"appId": app_id})
+        self._ark._request("DELETE", f"/streams/{segment(stream_id)}{suffix}")

@@ -96,6 +96,61 @@ class FilePage:
     next_cursor: str | None
 
 
+StreamStatus = Literal["created", "uploading", "processing", "ready", "failed"]
+
+
+@dataclass(frozen=True, slots=True)
+class ArkStream:
+    """A video managed by Ark Streams. Playback URLs are None until it is ready."""
+
+    id: str
+    title: str
+    status: StreamStatus | str
+    encode_progress: int
+    duration_seconds: int
+    width: int
+    height: int
+    size: int
+    thumbnail_url: str | None
+    hls_url: str | None
+    embed_url: str | None
+    created_at: str
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> ArkStream:
+        return cls(
+            id=str(value["id"]),
+            title=str(value["title"]),
+            status=str(value.get("status") or "created"),
+            encode_progress=int(value.get("encodeProgress") or 0),
+            duration_seconds=int(value.get("durationSeconds") or 0),
+            width=int(value.get("width") or 0),
+            height=int(value.get("height") or 0),
+            size=int(value.get("size") or 0),
+            thumbnail_url=_optional_string(value.get("thumbnailUrl")),
+            hls_url=_optional_string(value.get("hlsUrl")),
+            embed_url=_optional_string(value.get("embedUrl")),
+            created_at=str(value.get("createdAt") or ""),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class StreamUploadTicket:
+    endpoint: str
+
+
+@dataclass(frozen=True, slots=True)
+class StreamCreation:
+    stream: ArkStream
+    upload: StreamUploadTicket
+
+
+@dataclass(frozen=True, slots=True)
+class StreamPage:
+    streams: tuple[ArkStream, ...]
+    next_cursor: str | None
+
+
 @dataclass(frozen=True, slots=True)
 class ClientSession:
     token: str

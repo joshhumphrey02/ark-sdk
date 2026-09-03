@@ -31,6 +31,29 @@ await ark.folders.create({ name: "Products" });
 const usage = await ark.usage();
 ```
 
+### Ark Streams
+
+The REST client exposes Ark Streams' control plane. `create` returns the Ark
+TUS facade endpoint for a browser or TUS client; `import` asks Ark's video
+provider to fetch a remote URL without routing the video through your server.
+
+```ts
+const { stream, upload } = await ark.streams.create({
+  appId,
+  title: "Product launch",
+  sizeBytes,
+});
+
+await ark.streams.import({ appId, title: "Remote video", url });
+const current = await ark.streams.get(stream.id, { appId });
+const page = await ark.streams.list({ appId, limit: 50 });
+await ark.streams.refreshUploadUrl(stream.id, { appId });
+await ark.streams.delete(stream.id, { appId });
+```
+
+Use `@nerdstackgrp/ark-client` when you want the SDK to perform the complete
+browser TUS transfer and report progress automatically.
+
 `upload` accepts a path, a `Uint8Array`, or a `Blob`, and handles multipart
 transparently. Paths and blobs are streamed in bounded ranges rather than read
 into memory in full.

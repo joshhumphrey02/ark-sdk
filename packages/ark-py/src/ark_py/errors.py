@@ -35,12 +35,23 @@ def error_from_response(response: httpx.Response) -> ArkError:
         body = response.json()
     except ValueError:
         body = {}
-    envelope = body.get("error", {}) if isinstance(body, dict) else {}
-    if not isinstance(envelope, dict):
-        envelope = {}
+    raw_error = body.get("error") if isinstance(body, dict) else None
+    envelope = raw_error if isinstance(raw_error, dict) else {}
+    status_codes = {
+        400: "INVALID_ARGUMENT",
+        401: "UNAUTHORIZED",
+        402: "QUOTA_EXCEEDED",
+        403: "INSUFFICIENT_SCOPE",
+        404: "NOT_FOUND",
+        429: "RATE_LIMITED",
+    }
     return ArkError(
-        str(envelope.get("code") or "INTERNAL_ERROR"),
-        str(envelope.get("message") or f"Request failed with status {response.status_code}"),
+        str(envelope.get("code") or status_codes.get(response.status_code, "INTERNAL_ERROR")),
+        str(
+            envelope.get("message")
+            or (raw_error if isinstance(raw_error, str) else None)
+            or f"Request failed with status {response.status_code}"
+        ),
         status=response.status_code,
         request_id=_optional_string(envelope.get("requestId")),
         details=envelope.get("details") if isinstance(envelope.get("details"), dict) else None,

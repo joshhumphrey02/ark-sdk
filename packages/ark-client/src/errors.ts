@@ -41,6 +41,7 @@ export class ArkError extends Error {
 }
 
 const STATUS_CODES: Record<number, ArkErrorCode> = {
+  400: "INVALID_ARGUMENT",
   401: "UNAUTHORIZED",
   403: "INSUFFICIENT_SCOPE",
   404: "NOT_FOUND",
@@ -58,14 +59,17 @@ export async function errorFromResponse(response: Response): Promise<ArkError> {
   } catch {
     // A non-JSON body (a proxy error page, say) is not worth surfacing raw.
   }
-  const envelope = body?.error ?? {};
+  const rawError = body?.error;
+  const envelope = rawError && typeof rawError === "object" ? rawError : {};
   const code =
     (envelope.code as ArkErrorCode) ||
     STATUS_CODES[response.status] ||
     "INTERNAL_ERROR";
   return new ArkError({
     code,
-    message: envelope.message || `Request failed with status ${response.status}`,
+    message:
+      envelope.message ||
+      (typeof rawError === "string" ? rawError : `Request failed with status ${response.status}`),
     status: response.status,
     requestId: envelope.requestId ?? null,
     details: envelope.details ?? null,

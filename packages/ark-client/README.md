@@ -65,6 +65,36 @@ upload.abort();
 
 Aborting also releases the server-side upload session and its quota hold.
 
+## Ark Streams
+
+Upload video through Ark's resumable TUS facade; provider credentials and URLs
+remain hidden behind Ark. The stream is returned immediately and encodes in the
+background, so poll `get` until `status` is `ready` before using `hlsUrl` or
+`embedUrl`.
+
+```ts
+const stream = await ark.streams.upload(videoFile, {
+  appId,
+  title: "Product launch",
+  onProgress({ percentage }) {
+    setProgress(percentage);
+  },
+  signal: abortController.signal,
+});
+
+const current = await ark.streams.get(stream.id, { appId });
+const page = await ark.streams.list({ appId, limit: 50 });
+await ark.streams.delete(stream.id, { appId });
+```
+
+Remote import and lower-level upload-ticket operations are also available:
+
+```ts
+await ark.streams.import({ appId, title: "Remote video", url });
+const { stream, upload } = await ark.streams.create({ appId, title, sizeBytes });
+await ark.streams.refreshUploadUrl(stream.id, { appId });
+```
+
 ## Files and folders
 
 ```ts
@@ -95,7 +125,7 @@ try {
 }
 ```
 
-Codes: `UNAUTHORIZED`, `INSUFFICIENT_SCOPE`, `QUOTA_EXCEEDED`,
+Codes: `INVALID_ARGUMENT`, `UNAUTHORIZED`, `INSUFFICIENT_SCOPE`, `QUOTA_EXCEEDED`,
 `FILE_TOO_LARGE`, `INVALID_FILE_TYPE`, `UPLOAD_EXPIRED`, `UPLOAD_FAILED`,
 `UPLOAD_ABORTED`, `NOT_FOUND`, `NETWORK_ERROR`, `RATE_LIMITED`,
 `INTERNAL_ERROR`.

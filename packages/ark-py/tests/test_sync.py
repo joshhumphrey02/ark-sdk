@@ -13,6 +13,21 @@ from conftest import file_response, json_response
 
 from ark_py import Ark, ArkError, ImageOptions
 
+STREAM_RESPONSE = {
+    "id": "stream-1",
+    "title": "Launch",
+    "status": "ready",
+    "encodeProgress": 100,
+    "durationSeconds": 12,
+    "width": 1920,
+    "height": 1080,
+    "size": 42,
+    "thumbnailUrl": "https://cdn.test/thumb.jpg",
+    "hlsUrl": "https://cdn.test/playlist.m3u8",
+    "embedUrl": "https://player.test/embed",
+    "createdAt": "2026-09-03T00:00:00.000Z",
+}
+
 
 def client_for(handler: Any) -> httpx.Client:
     return httpx.Client(transport=httpx.MockTransport(handler))
@@ -84,6 +99,38 @@ def test_resources_models_images_and_errors() -> None:
         ark.files.get("missing")
     assert caught.value.code == "NOT_FOUND"
     assert caught.value.request_id == "req-1"
+    client.close()
+
+
+def test_streams_control_plane() -> None:
+    requests: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append((request.method, str(request.url)))
+        if request.url.path.endswith("/streams") and request.method == "POST":
+            return json_response(
+                {"stream": STREAM_RESPONSE, "upload": {"endpoint": "/streams/stream-1/upload"}},
+                201,
+            )
+        if request.url.path.endswith("/streams/fetch"):
+            return json_response(STREAM_RESPONSE, 202)
+        if request.url.path.endswith("/upload-url"):
+            return json_response({"endpoint": "/streams/stream-1/upload?appId=app-1"})
+        if request.method == "DELETE":
+            return httpx.Response(204)
+        if request.url.path.endswith("/stream-1"):
+            return json_response(STREAM_RESPONSE)
+        return json_response({"streams": [STREAM_RESPONSE], "nextCursor": "next"})
+
+    client = client_for(handler)
+    streams = Ark("token", base_url="https://ark.test", client=client).streams
+    assert streams.create("Launch", 42, app_id="app-1").upload.endpoint.endswith("/upload")
+    assert streams.import_from_url("Remote", "https://video.test/a.mp4").id == "stream-1"
+    assert streams.list(app_id="app-1", limit=10).next_cursor == "next"
+    assert streams.get("stream-1", app_id="app-1").hls_url is not None
+    assert streams.refresh_upload_url("stream-1", app_id="app-1").endpoint.endswith("appId=app-1")
+    assert streams.delete("stream-1", app_id="app-1") is None
+    assert requests[2] == ("GET", "https://ark.test/api/v2/streams?appId=app-1&limit=10")
     client.close()
 
 

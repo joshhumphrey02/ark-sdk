@@ -38,6 +38,13 @@ await ark.files.getDownloadUrl(file.id);
 
 await ark.folders.create({ name: "Products" });
 await ark.folders.list();
+
+const video = await ark.streams.upload(selectedVideo, {
+  appId,
+  onProgress: ({ percentage }) => setProgress(percentage),
+});
+// Poll until ready, then use hlsUrl or embedUrl.
+await ark.streams.get(video.id, { appId });
 ```
 
 ### `@nerdstackgrp/ark-server`
@@ -52,6 +59,8 @@ const ark = new Ark({ token: process.env.ARK_API_TOKEN! });
 const folder = await ark.folders.create({ name: "Products" });
 await ark.files.upload("./photo.jpg", { folderId: folder.id });
 const usage = await ark.usage();
+const videos = await ark.streams.list({ appId });
+await ark.streams.import({ appId, title: "Demo", url: sourceUrl });
 
 // S3-compatible
 const s3 = new ArkS3({
@@ -82,6 +91,7 @@ from ark_py import Ark, AsyncArk
 
 with Ark(token) as ark:
     file = ark.files.upload("./photo.jpg")
+    videos = ark.streams.list(app_id=app_id)
 ```
 
 ## Security model

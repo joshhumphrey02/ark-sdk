@@ -105,10 +105,21 @@ export async function errorFromRest(response: Response): Promise<ArkError> {
   } catch {
     // Non-JSON bodies carry nothing worth surfacing.
   }
-  const envelope = body?.error ?? {};
+  const rawError = body?.error;
+  const envelope = rawError && typeof rawError === "object" ? rawError : {};
+  const statusCodes: Record<number, ArkErrorCode> = {
+    400: "INVALID_ARGUMENT",
+    401: "UNAUTHORIZED",
+    402: "QUOTA_EXCEEDED",
+    403: "INSUFFICIENT_SCOPE",
+    404: "NOT_FOUND",
+    429: "RATE_LIMITED",
+  };
   return new ArkError({
-    code: (envelope.code as ArkErrorCode) || "INTERNAL_ERROR",
-    message: envelope.message || `Request failed with status ${response.status}`,
+    code: (envelope.code as ArkErrorCode) || statusCodes[response.status] || "INTERNAL_ERROR",
+    message:
+      envelope.message ||
+      (typeof rawError === "string" ? rawError : `Request failed with status ${response.status}`),
     status: response.status,
     requestId: envelope.requestId ?? null,
   });

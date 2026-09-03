@@ -20,12 +20,24 @@ import type {
   ArkUploadOptions,
   ArkUploadStream,
   ArkUploadStreamOptions,
+  ArkStream,
+  ArkStreamCreateInput,
+  ArkStreamImportInput,
+  ArkStreamUploadTicket,
 } from "./types";
 
 const DEFAULT_BASE_URL = "https://ark.nerdstackgrp.com";
 
 function pathSegment(value: string) {
   return encodeURIComponent(value);
+}
+
+function streamQuery(appId?: string, extra?: { limit?: number; cursor?: string }) {
+  const query = new URLSearchParams();
+  if (appId) query.set("appId", appId);
+  if (extra?.limit) query.set("limit", String(extra.limit));
+  if (extra?.cursor) query.set("cursor", extra.cursor);
+  return query.toString() ? `?${query}` : "";
 }
 
 export class Ark {
@@ -154,6 +166,38 @@ export class Ark {
     create: (input: ArkImportInput) => this.#request<any>("/imports", { method: "POST", body: JSON.stringify(input) }),
     get: (importId: string) => this.#request<any>(`/imports/${pathSegment(importId)}`),
     cancel: (importId: string) => this.#request<{ cancelled: boolean }>(`/imports/${pathSegment(importId)}/cancel`, { method: "POST" }),
+  };
+
+  /** Ark Streams control plane. Upload bytes with the returned TUS ticket in a client. */
+  readonly streams = {
+    create: (input: ArkStreamCreateInput) =>
+      this.#request<{ stream: ArkStream; upload: ArkStreamUploadTicket }>("/streams", {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+    import: (input: ArkStreamImportInput) =>
+      this.#request<ArkStream>("/streams/fetch", {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+    list: (params?: { appId?: string; limit?: number; cursor?: string }) =>
+      this.#request<{ streams: ArkStream[]; nextCursor: string | null }>(
+        `/streams${streamQuery(params?.appId, params)}`,
+      ),
+    get: (streamId: string, params?: { appId?: string }) =>
+      this.#request<ArkStream>(
+        `/streams/${pathSegment(streamId)}${streamQuery(params?.appId)}`,
+      ),
+    refreshUploadUrl: (streamId: string, params?: { appId?: string }) =>
+      this.#request<ArkStreamUploadTicket>(
+        `/streams/${pathSegment(streamId)}/upload-url${streamQuery(params?.appId)}`,
+        { method: "POST" },
+      ),
+    delete: (streamId: string, params?: { appId?: string }) =>
+      this.#request<void>(
+        `/streams/${pathSegment(streamId)}${streamQuery(params?.appId)}`,
+        { method: "DELETE" },
+      ),
   };
 
   usage() {

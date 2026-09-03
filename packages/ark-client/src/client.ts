@@ -21,12 +21,32 @@ import type {
   ArkUploadSession,
   ArkUsage,
   ArkImageOptions,
+  ArkStream,
+  ArkStreamCreateInput,
+  ArkStreamImportInput,
+  ArkStreamUploadOptions,
+  ArkStreamUploadTicket,
 } from "./types";
 
 const DEFAULT_BASE_URL = "https://ark.nerdstackgrp.com";
 
 function pathSegment(value: string) {
   return encodeURIComponent(value);
+}
+
+function streamQuery(appId?: string, extra?: { limit?: number; cursor?: string }) {
+  const query = new URLSearchParams();
+  if (appId) query.set("appId", appId);
+  if (extra?.limit) query.set("limit", String(extra.limit));
+  if (extra?.cursor) query.set("cursor", extra.cursor);
+  return query.toString() ? `?${query}` : "";
+}
+
+function tusMetadata(value: string) {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
 }
 
 /** An in-flight upload, so callers can cancel it (§45). */
@@ -81,19 +101,20 @@ export class ArkClient {
 
   async #request<T>(
     path: string,
-    init: RequestInit & { signal?: AbortSignal } = {},
+    init: RequestInit & { signal?: AbortSignal; retry?: boolean } = {},
   ): Promise<T> {
+    const { retry = true, ...requestInit } = init;
     const response = await requestWithRetry(
       () =>
         this.#fetch(this.#url(path), {
-          ...init,
+          ...requestInit,
           headers: {
             authorization: `Bearer ${this.#token}`,
-            ...(init.body ? { "content-type": "application/json" } : {}),
-            ...(init.headers as Record<string, string>),
+            ...(requestInit.body ? { "content-type": "application/json" } : {}),
+            ...(requestInit.headers as Record<string, string>),
           },
         }),
-      { signal: init.signal },
+      { signal: requestInit.signal, maxAttempts: retry ? undefined : 1 },
     );
     if (!response.ok) throw await errorFromResponse(response);
     if (response.status === 204) return undefined as T;
@@ -186,8 +207,163 @@ export class ArkClient {
     url: (assetId: string, options: ArkImageOptions = {}) => imageUrl(this.#baseUrl, this.#version, assetId, options),
   };
 
+  readonly streams = {
+    create: (input: ArkStreamCreateInput) =>
+      this.#request<{ stream: ArkStream; upload: ArkStreamUploadTicket }>("/streams", {
+        method: "POST",
+        body: JSON.stringify(input),
+        retry: false,
+      }),
+
+    import: (input: ArkStreamImportInput) =>
+      this.#request<ArkStream>("/streams/fetch", {
+        method: "POST",
+        body: JSON.stringify(input),
+        retry: false,
+      }),
+
+    list: (params?: { appId?: string; limit?: number; cursor?: string }) =>
+      this.#request<{ streams: ArkStream[]; nextCursor: string | null }>(
+        `/streams${streamQuery(params?.appId, params)}`,
+      ),
+
+    get: (streamId: string, params?: { appId?: string }) =>
+      this.#request<ArkStream>(
+        `/streams/${pathSegment(streamId)}${streamQuery(params?.appId)}`,
+      ),
+
+    refreshUploadUrl: (streamId: string, params?: { appId?: string }) =>
+      this.#request<ArkStreamUploadTicket>(
+        `/streams/${pathSegment(streamId)}/upload-url${streamQuery(params?.appId)}`,
+        { method: "POST" },
+      ),
+
+    delete: (streamId: string, params?: { appId?: string }) =>
+      this.#request<void>(
+        `/streams/${pathSegment(streamId)}${streamQuery(params?.appId)}`,
+        { method: "DELETE" },
+      ),
+
+    /** Create a stream and transfer a File/Blob through Ark's resumable TUS facade. */
+    upload: (file: File | Blob, options: ArkStreamUploadOptions = {}) => {
+      const filename = (file as File).name || "video";
+      const controller = new AbortController();
+      const abortFromCaller = () => controller.abort(options.signal?.reason);
+      if (options.signal?.aborted) controller.abort(options.signal.reason);
+      else options.signal?.addEventListener("abort", abortFromCaller, { once: true });
+      return this.#uploadStreamVideo(file, filename, options, controller.signal).finally(() => {
+        options.signal?.removeEventListener("abort", abortFromCaller);
+      });
+    },
+  };
+
   usage() {
     return this.#request<ArkUsage>("/usage");
+  }
+
+  async #uploadStreamVideo(
+    file: File | Blob,
+    filename: string,
+    options: ArkStreamUploadOptions,
+    signal: AbortSignal,
+  ): Promise<ArkStream> {
+    const chunkSize = options.chunkSize ?? 64 * 1024 * 1024;
+    if (!Number.isSafeInteger(chunkSize) || chunkSize <= 0) {
+      throw new ArkError({ code: "INVALID_ARGUMENT", message: "chunkSize must be a positive integer" });
+    }
+    if (!Number.isSafeInteger(file.size) || file.size <= 0) {
+      throw new ArkError({ code: "INVALID_ARGUMENT", message: "The video must contain at least one byte" });
+    }
+    const created = await this.#request<{ stream: ArkStream; upload: ArkStreamUploadTicket }>(
+      "/streams",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          title: options.title || filename.replace(/\.[^.]+$/, ""),
+          sizeBytes: file.size,
+          appId: options.appId,
+          collectionId: options.collectionId,
+        }),
+        signal,
+        retry: false,
+      },
+    );
+    const ticketUrl = this.#url(created.upload.endpoint);
+    const initial = await this.#tusFetch(ticketUrl, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${this.#token}`,
+        "Tus-Resumable": "1.0.0",
+        "Upload-Length": String(file.size),
+        "Upload-Metadata": `filename ${tusMetadata(filename)},filetype ${tusMetadata(file.type || "video/mp4")}`,
+      },
+      signal,
+    });
+    if (!initial.ok) throw await errorFromResponse(initial);
+    const location = initial.headers.get("location");
+    if (!location) {
+      throw new ArkError({ code: "UPLOAD_FAILED", message: "Ark did not return a TUS upload location" });
+    }
+    const uploadUrl = new URL(location, ticketUrl).toString();
+    let offset = 0;
+    let retries = 0;
+    while (offset < file.size) {
+      const chunk = file.slice(offset, Math.min(file.size, offset + chunkSize));
+      try {
+        const response = await this.#tusFetch(uploadUrl, {
+          method: "PATCH",
+          headers: {
+            authorization: `Bearer ${this.#token}`,
+            "Tus-Resumable": "1.0.0",
+            "Upload-Offset": String(offset),
+            "Content-Type": "application/offset+octet-stream",
+          },
+          body: chunk,
+          signal,
+        });
+        if (!response.ok) throw await errorFromResponse(response);
+        const acknowledged = Number(response.headers.get("upload-offset"));
+        offset = Number.isFinite(acknowledged) && acknowledged > offset
+          ? acknowledged
+          : offset + chunk.size;
+        retries = 0;
+        options.onProgress?.({
+          uploadedBytes: offset,
+          totalBytes: file.size,
+          percentage: file.size ? Math.min(100, (offset / file.size) * 100) : 100,
+        });
+      } catch (error) {
+        if (signal.aborted || retries >= 2) throw error;
+        retries += 1;
+        const head = await this.#tusFetch(uploadUrl, {
+          method: "HEAD",
+          headers: { authorization: `Bearer ${this.#token}`, "Tus-Resumable": "1.0.0" },
+          signal,
+        });
+        if (!head.ok) throw await errorFromResponse(head);
+        const resumedOffset = Number(head.headers.get("upload-offset"));
+        if (!Number.isFinite(resumedOffset) || resumedOffset < 0 || resumedOffset > file.size) {
+          throw error;
+        }
+        offset = resumedOffset;
+      }
+    }
+    return created.stream;
+  }
+
+  async #tusFetch(url: string, init: RequestInit): Promise<Response> {
+    try {
+      return await this.#fetch(url, init);
+    } catch (error) {
+      if (init.signal?.aborted || (error as Error)?.name === "AbortError") {
+        throw new ArkError({ code: "UPLOAD_ABORTED", message: "Upload aborted" });
+      }
+      if (error instanceof ArkError) throw error;
+      throw new ArkError({
+        code: "NETWORK_ERROR",
+        message: (error as Error)?.message || "Upload connection failed",
+      });
+    }
   }
 
   async #upload(

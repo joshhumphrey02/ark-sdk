@@ -54,6 +54,56 @@ export type ArkProgress = {
   percentage: number;
 };
 
+export type ArkStreamStatus =
+  | "created"
+  | "uploading"
+  | "processing"
+  | "ready"
+  | "failed";
+
+/** A video managed by Ark Streams. Playback URLs are null until encoding finishes. */
+export type ArkStream = {
+  id: string;
+  title: string;
+  status: ArkStreamStatus;
+  encodeProgress: number;
+  durationSeconds: number;
+  width: number;
+  height: number;
+  size: number;
+  thumbnailUrl: string | null;
+  hlsUrl: string | null;
+  embedUrl: string | null;
+  createdAt: string;
+};
+
+export type ArkStreamUploadTicket = { endpoint: string };
+
+export type ArkStreamCreateInput = {
+  title: string;
+  sizeBytes: number;
+  appId?: string;
+  collectionId?: string;
+};
+
+export type ArkStreamImportInput = {
+  title: string;
+  url: string;
+  appId?: string;
+  accessToken?: string;
+  sizeBytes?: number;
+};
+
+export type ArkStreamUploadOptions = {
+  title?: string;
+  appId?: string;
+  collectionId?: string;
+  /** Defaults to 64 MiB. TUS chunks are uploaded sequentially. */
+  chunkSize?: number;
+  onProgress?: (progress: ArkProgress) => void;
+  signal?: AbortSignal;
+};
+
 export type ImageFormat = "original" | "jpeg" | "png" | "webp" | "avif";
 export type WatermarkPosition = "top-left" | "top-center" | "top-right" | "center-left" | "center" | "center-right" | "bottom-left" | "bottom-center" | "bottom-right";
 export type ArkImageOptions = { width?: number; height?: number; quality?: number; format?: ImageFormat; thumbnail?: boolean; watermark?: boolean };
@@ -69,6 +119,7 @@ export type ArkUploadOptions = {
 
 /** Stable error codes the SDK surfaces (§42). */
 export type ArkErrorCode =
+  | "INVALID_ARGUMENT"
   | "UNAUTHORIZED"
   | "INSUFFICIENT_SCOPE"
   | "QUOTA_EXCEEDED"

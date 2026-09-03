@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 import pytest
 from conftest import file_response, json_response
+from test_sync import STREAM_RESPONSE
 
 from ark_py import ArkError, AsyncArk
 
@@ -39,6 +40,35 @@ async def test_async_resources_and_default_url() -> None:
     ark = AsyncArk("token", client=client)
     assert (await ark.usage()).storage.used_bytes == 1
     assert urls == ["https://ark.nerdstackgrp.com/api/v2/usage"]
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_async_streams_control_plane() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/streams") and request.method == "POST":
+            return json_response(
+                {"stream": STREAM_RESPONSE, "upload": {"endpoint": "/streams/stream-1/upload"}},
+                201,
+            )
+        if request.url.path.endswith("/streams/fetch"):
+            return json_response(STREAM_RESPONSE, 202)
+        if request.url.path.endswith("/upload-url"):
+            return json_response({"endpoint": "/streams/stream-1/upload"})
+        if request.method == "DELETE":
+            return httpx.Response(204)
+        if request.url.path.endswith("/stream-1"):
+            return json_response(STREAM_RESPONSE)
+        return json_response({"streams": [STREAM_RESPONSE], "nextCursor": None})
+
+    client = async_client_for(handler)
+    streams = AsyncArk("token", base_url="https://ark.test", client=client).streams
+    assert (await streams.create("Launch", 42)).stream.id == "stream-1"
+    assert (await streams.import_from_url("Remote", "https://video.test/a.mp4")).size == 42
+    assert len((await streams.list(app_id="app-1")).streams) == 1
+    assert (await streams.get("stream-1")).status == "ready"
+    assert (await streams.refresh_upload_url("stream-1")).endpoint.endswith("/upload")
+    assert await streams.delete("stream-1") is None
     await client.aclose()
 
 

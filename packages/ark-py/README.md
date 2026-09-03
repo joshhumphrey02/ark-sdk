@@ -87,6 +87,27 @@ session = ark.create_client_session(ttl_seconds=900)
 # Hand session.token to @nerdstackgrp/ark-client in the browser.
 ```
 
+## Ark Streams
+
+Both synchronous and asynchronous clients expose the Ark Streams control
+plane. Creating a video returns a TUS endpoint for the client that owns the
+video bytes. A remote import is fetched directly by Ark's video provider.
+
+```python
+creation = ark.streams.create("Product launch", size_bytes, app_id=app_id)
+print(creation.stream.id, creation.upload.endpoint)
+
+ark.streams.import_from_url("Remote video", source_url, app_id=app_id)
+page = ark.streams.list(app_id=app_id, limit=50)
+stream = ark.streams.get(creation.stream.id, app_id=app_id)
+ark.streams.refresh_upload_url(stream.id, app_id=app_id)
+ark.streams.delete(stream.id, app_id=app_id)
+```
+
+The same methods on `AsyncArk.streams` are awaitable. Poll `get` while a video
+is uploading or encoding; `hls_url` and `embed_url` are populated when its
+status becomes `ready`.
+
 ## S3-compatible access
 
 ```python
