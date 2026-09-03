@@ -73,6 +73,9 @@ export type ArkStream = {
   size: number;
   thumbnailUrl: string | null;
   hlsUrl: string | null;
+  /** Ark-hosted player page. Drop it straight into an iframe; playback is
+   *  signed server-side for each viewer, so the URL carries no credential and
+   *  does not expire on its own. */
   embedUrl: string | null;
   createdAt: string;
 };

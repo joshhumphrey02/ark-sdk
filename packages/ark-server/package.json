@@ -1,6 +1,6 @@
 {
   "name": "@nerdstackgrp/ark-server",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "Ark backend SDK — REST and S3-compatible access to Ark storage.",
   "license": "MIT",
   "author": "Nerdstack",

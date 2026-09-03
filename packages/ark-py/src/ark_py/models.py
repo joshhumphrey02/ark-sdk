@@ -101,7 +101,15 @@ StreamStatus = Literal["created", "uploading", "processing", "ready", "failed"]
 
 @dataclass(frozen=True, slots=True)
 class ArkStream:
-    """A video managed by Ark Streams. Playback URLs are None until it is ready."""
+    """A video managed by Ark Streams.
+
+    ``hls_url``, ``thumbnail_url`` and ``embed_url`` are None until ``status``
+    is ``"ready"``: an encode takes time, and returning a URL that 404s would be
+    worse than reporting that it is unfinished. Poll ``streams.get`` until then.
+
+    ``embed_url`` is an Ark-hosted player page -- put it straight in an iframe.
+    Playback is signed server-side per viewer, so it carries no credential.
+    """
 
     id: str
     title: str

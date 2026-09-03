@@ -43,7 +43,13 @@ export type ArkUsage = {
 
 export type ArkStreamStatus = "created" | "uploading" | "processing" | "ready" | "failed";
 
-/** A video managed by Ark Streams. Playback URLs are null until encoding finishes. */
+/**
+ * A video managed by Ark Streams.
+ *
+ * `hlsUrl`, `thumbnailUrl` and `embedUrl` are null until `status` is "ready" --
+ * an encode takes time, and handing back a URL that 404s would be worse than
+ * reporting that it is not finished. Poll `streams.get` until then.
+ */
 export type ArkStream = {
   id: string;
   title: string;
@@ -55,6 +61,9 @@ export type ArkStream = {
   size: number;
   thumbnailUrl: string | null;
   hlsUrl: string | null;
+  /** Ark-hosted player page. Drop it straight into an iframe; playback is
+   *  signed server-side for each viewer, so the URL carries no credential and
+   *  does not expire on its own. */
   embedUrl: string | null;
   createdAt: string;
 };
