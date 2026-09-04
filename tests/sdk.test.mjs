@@ -217,3 +217,82 @@ test("ArkClient cancels sibling multipart uploads and awaits session cleanup", a
   assert.equal(siblingAborted, true);
   assert.equal(sessionAborted, true);
 });
+
+test("folders.list returns folders from the envelope the API actually sends", async () => {
+  // GET /v2/folders responds {folders, pagination}, not {data, nextCursor}
+  // like /v2/files. Both clients typed it as {data}, so callers reading
+  // `.data` got undefined -- the same defect that made the Python SDK's
+  // folders.list() return an empty tuple against every real workspace.
+  const body = {
+    folders: [
+      { id: "folder-1", name: "Media", parentId: null },
+      { id: "folder-2", name: "Docs", parentId: "folder-1" },
+    ],
+    pagination: { page: 1, limit: 50, total: 2, pages: 1 },
+  };
+  const fetch = async () => json(body);
+
+  for (const client of [
+    new Ark({ token: "ark_live_test", fetch }),
+    new ArkClient({ token: "arkc_test", fetch }),
+  ]) {
+    const folders = await client.folders.list();
+    assert.deepEqual(
+      folders.map((folder) => folder.name),
+      ["Media", "Docs"],
+    );
+  }
+});
+
+test("folders.list still accepts a legacy data envelope", async () => {
+  const fetch = async () => json({ data: [{ id: "f1", name: "Legacy", parentId: null }] });
+  for (const client of [
+    new Ark({ token: "ark_live_test", fetch }),
+    new ArkClient({ token: "arkc_test", fetch }),
+  ]) {
+    const folders = await client.folders.list();
+    assert.deepEqual(folders.map((folder) => folder.name), ["Legacy"]);
+  }
+});
+
+test("folders.list throws rather than reporting an unreadable body as empty", async () => {
+  // Silently returning [] is what made this expensive to diagnose: list()
+  // said the folder was absent, create() then refused because it existed.
+  const fetch = async () => json({ unexpected: [] });
+  for (const client of [
+    new Ark({ token: "ark_live_test", fetch }),
+    new ArkClient({ token: "arkc_test", fetch }),
+  ]) {
+    await assert.rejects(() => client.folders.list(), (error) => {
+      // Checked by name rather than `instanceof`: each package bundles its own
+      // ArkError class, so an identity check across the two would fail here
+      // for reasons that have nothing to do with the behaviour under test.
+      assert.equal(error.name, "ArkError");
+      assert.equal(error.code, "INTERNAL_ERROR");
+      assert.match(error.message, /not in a recognised format/);
+      return true;
+    });
+  }
+});
+
+test("folders.list reports a genuinely empty workspace as an empty array", async () => {
+  const fetch = async () => json({ folders: [], pagination: { total: 0 } });
+  for (const client of [
+    new Ark({ token: "ark_live_test", fetch }),
+    new ArkClient({ token: "arkc_test", fetch }),
+  ]) {
+    assert.deepEqual(await client.folders.list(), []);
+  }
+});
+
+test("folders.list forwards parentId so nested folders can be walked", async () => {
+  // Resolving a/b/c lists children at each level; without parentId reaching
+  // the query string nothing below the root is reachable.
+  const urls = [];
+  const fetch = async (url) => {
+    urls.push(String(url));
+    return json({ folders: [], pagination: { total: 0 } });
+  };
+  await new Ark({ token: "ark_live_test", fetch }).folders.list({ parentId: "folder-1" });
+  assert.match(urls[0], /parentId=folder-1/);
+});

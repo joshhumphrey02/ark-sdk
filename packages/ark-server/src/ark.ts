@@ -140,9 +140,34 @@ export class Ark {
   };
 
   readonly folders = {
-    list: (params?: { parentId?: string }) => {
+    /**
+     * List folders, optionally under a parent.
+     *
+     * Returns the folders themselves rather than the transport envelope. The
+     * two list endpoints do not agree on one: /files sends `{data, nextCursor}`
+     * and /folders sends `{folders, pagination}`. This client typed the folder
+     * response as `{data}`, so `.data` was always `undefined` -- the same
+     * mismatch that made the Python SDK's folders.list() return nothing.
+     * Unwrapping here means callers never have to know which envelope arrived.
+     */
+    list: async (params?: { parentId?: string }): Promise<ArkFolder[]> => {
       const suffix = params?.parentId ? `?parentId=${encodeURIComponent(params.parentId)}` : "";
-      return this.#request<{ data: ArkFolder[] }>(`/folders${suffix}`);
+      const body = await this.#request<Record<string, unknown>>(`/folders${suffix}`);
+      // "data" is still accepted so an older deployment keeps working.
+      for (const key of ["folders", "data"] as const) {
+        const value = body?.[key];
+        if (Array.isArray(value)) return value as ArkFolder[];
+      }
+      // Never an empty array: a body this client could not parse must not be
+      // indistinguishable from a workspace that genuinely has no folders. That
+      // silence is what turned the Python version of this bug into a loop where
+      // list() found nothing and create() then refused as a duplicate.
+      throw new ArkError({
+        code: "INTERNAL_ERROR",
+        message:
+          "The folder list response was not in a recognised format. " +
+          `Expected a 'folders' array, got keys: ${Object.keys(body ?? {}).join(", ") || "none"}.`,
+      });
     },
     create: (input: { name: string; parentId?: string | null }) =>
       this.#request<ArkFolder>("/folders", { method: "POST", body: JSON.stringify(input) }),
