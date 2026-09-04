@@ -24,6 +24,7 @@ STREAM_RESPONSE = {
     "size": 42,
     "thumbnailUrl": "https://cdn.test/thumb.jpg",
     "hlsUrl": "https://cdn.test/playlist.m3u8",
+    "hlsExpiresAt": "2026-09-03T01:00:00.000Z",
     "embedUrl": "https://player.test/embed",
     "createdAt": "2026-09-03T00:00:00.000Z",
 }
@@ -136,7 +137,11 @@ def test_streams_control_plane() -> None:
     assert streams.create("Launch", 42, app_id="app-1").upload.endpoint.endswith("/upload")
     assert streams.import_from_url("Remote", "https://video.test/a.mp4").id == "stream-1"
     assert streams.list(app_id="app-1", limit=10).next_cursor == "next"
-    assert streams.get("stream-1", app_id="app-1").hls_url is not None
+    fetched = streams.get("stream-1", app_id="app-1")
+    assert fetched.hls_url is not None
+    # Playback URLs are signed and short-lived; the expiry has to survive
+    # deserialization or a caller has no way to refresh before it lapses.
+    assert fetched.hls_expires_at == "2026-09-03T01:00:00.000Z"
     assert streams.refresh_upload_url("stream-1", app_id="app-1").endpoint.endswith("appId=app-1")
     assert streams.delete("stream-1", app_id="app-1") is None
     assert requests[2] == ("GET", "https://ark.test/api/v2/streams?appId=app-1&limit=10")

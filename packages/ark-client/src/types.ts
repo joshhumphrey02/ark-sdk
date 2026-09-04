@@ -71,11 +71,22 @@ export type ArkStream = {
   width: number;
   height: number;
   size: number;
+  /** Poster image. **Signed and short-lived — do not store.** Expires at
+   *  `hlsExpiresAt`, like `hlsUrl`. Unlike `ArkFile.thumbnailUrl`, which is a
+   *  permanent CDN path, this one stops working. */
   thumbnailUrl: string | null;
+  /** HLS manifest. **Signed and short-lived — do not store.** Persist `id`
+   *  instead and call `streams.get(id)` when you are about to play; treat this
+   *  value like a presigned URL, not like a `ArkFile.url`. */
   hlsUrl: string | null;
+  /** When `hlsUrl` and `thumbnailUrl` stop working (ISO-8601), or null when
+   *  the library serves unsigned URLs that do not expire. Refresh before this
+   *  passes rather than assuming a fixed lifetime. */
+  hlsExpiresAt: string | null;
   /** Ark-hosted player page. Drop it straight into an iframe; playback is
    *  signed server-side for each viewer, so the URL carries no credential and
-   *  does not expire on its own. */
+   *  does not expire on its own. **This is the one playback value that is safe
+   *  to store.** */
   embedUrl: string | null;
   createdAt: string;
 };

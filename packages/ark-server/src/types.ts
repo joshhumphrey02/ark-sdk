@@ -49,6 +49,12 @@ export type ArkStreamStatus = "created" | "uploading" | "processing" | "ready" |
  * `hlsUrl`, `thumbnailUrl` and `embedUrl` are null until `status` is "ready" --
  * an encode takes time, and handing back a URL that 404s would be worse than
  * reporting that it is not finished. Poll `streams.get` until then.
+ *
+ * Storage rules differ from files, and getting this wrong is the most common
+ * Streams mistake: `ArkFile.url` is a permanent CDN path, but `hlsUrl` and
+ * `thumbnailUrl` here are **signed and expire within the hour**. Persist `id`
+ * (and `embedUrl` if you want a ready-made player) and resolve playback when
+ * you need it.
  */
 export type ArkStream = {
   id: string;
@@ -59,11 +65,19 @@ export type ArkStream = {
   width: number;
   height: number;
   size: number;
+  /** Poster image. **Signed and short-lived — do not store.** Expires at
+   *  `hlsExpiresAt`, unlike `ArkFile.thumbnailUrl`, which is permanent. */
   thumbnailUrl: string | null;
+  /** HLS manifest. **Signed and short-lived — do not store.** Persist `id` and
+   *  call `streams.get(id)` when you are about to play. */
   hlsUrl: string | null;
+  /** When `hlsUrl` and `thumbnailUrl` stop working (ISO-8601), or null when
+   *  the library serves unsigned URLs that do not expire. */
+  hlsExpiresAt: string | null;
   /** Ark-hosted player page. Drop it straight into an iframe; playback is
    *  signed server-side for each viewer, so the URL carries no credential and
-   *  does not expire on its own. */
+   *  does not expire on its own. **This is the one playback value that is safe
+   *  to store.** */
   embedUrl: string | null;
   createdAt: string;
 };

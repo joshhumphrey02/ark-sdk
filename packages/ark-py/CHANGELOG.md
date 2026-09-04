@@ -2,6 +2,21 @@
 
 ## 1.0.5
 
+### Added
+
+- `ArkStream.hls_expires_at` reports when `hls_url` and `thumbnail_url` stop
+  working, so a caller can refresh before playback breaks instead of guessing a
+  lifetime. Absent on older deployments, where it parses as `None`.
+
+### Changed
+
+- Documented that `hls_url` and `thumbnail_url` are signed and expire within
+  the hour, and must not be stored. `ArkFile.url` is a permanent CDN path, and
+  the identical field names made the opposite behaviour easy to miss: storing a
+  playback URL yields a link that works in testing and is dead when a user
+  opens it. Persist `id` and resolve playback on demand, or use `embed_url`,
+  which carries no credential and does not expire.
+
 ### Fixed
 
 - `folders.list()` and `AsyncFolders.list()` returned an empty tuple against

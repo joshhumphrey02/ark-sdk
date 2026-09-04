@@ -108,7 +108,15 @@ class ArkStream:
     worse than reporting that it is unfinished. Poll ``streams.get`` until then.
 
     ``embed_url`` is an Ark-hosted player page -- put it straight in an iframe.
-    Playback is signed server-side per viewer, so it carries no credential.
+    Playback is signed server-side per viewer, so it carries no credential, and
+    it does not expire. It is the one playback value that is safe to store.
+
+    **Do not store ``hls_url`` or ``thumbnail_url``.** Unlike ``ArkFile.url``,
+    which is a permanent CDN path, both are signed and expire within the hour
+    (``hls_expires_at`` says when). Persist ``id`` instead and call
+    ``streams.get(id)`` when you are about to play; treat them the way you
+    would a presigned URL. Writing one into a database or an email produces a
+    link that works in testing and is dead when a user opens it.
     """
 
     id: str
@@ -121,6 +129,9 @@ class ArkStream:
     size: int
     thumbnail_url: str | None
     hls_url: str | None
+    #: When ``hls_url``/``thumbnail_url`` stop working (ISO-8601), or None when
+    #: the library serves unsigned URLs that never expire.
+    hls_expires_at: str | None
     embed_url: str | None
     created_at: str
 
@@ -137,6 +148,7 @@ class ArkStream:
             size=int(value.get("size") or 0),
             thumbnail_url=_optional_string(value.get("thumbnailUrl")),
             hls_url=_optional_string(value.get("hlsUrl")),
+            hls_expires_at=_optional_string(value.get("hlsExpiresAt")),
             embed_url=_optional_string(value.get("embedUrl")),
             created_at=str(value.get("createdAt") or ""),
         )
