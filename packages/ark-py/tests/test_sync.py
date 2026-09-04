@@ -55,7 +55,16 @@ def test_resources_models_images_and_errors() -> None:
         if request.url.path.endswith("/files"):
             return json_response({"data": [file_response(4)], "nextCursor": "next"})
         if request.url.path.endswith("/folders"):
-            return json_response({"data": [{"id": "folder-1", "name": "Media", "parentId": None}]})
+            # The envelope the API actually sends. This mock previously
+            # returned {"data": ...}, matching the SDK's mistaken expectation
+            # rather than the server, so it passed while every real call
+            # returned nothing.
+            return json_response(
+                {
+                    "folders": [{"id": "folder-1", "name": "Media", "parentId": None}],
+                    "pagination": {"page": 1, "limit": 50, "total": 1, "pages": 1},
+                }
+            )
         if request.url.path.endswith("/usage"):
             return json_response(
                 {
@@ -284,3 +293,82 @@ def test_non_seekable_stream_requires_size_and_filename() -> None:
     with pytest.raises(ArkError, match="filename is required"):
         ark.files.upload(NonSeekable(b"data"), size=4)
     ark._client.close()
+
+
+def test_folders_list_reads_the_shape_the_api_actually_returns() -> None:
+    """GET /v2/folders returns {"folders": [...], "pagination": {...}}.
+
+    The SDK read "data" -- the key /v2/files uses -- so this returned an empty
+    tuple against every real workspace. Nothing raised: the parser's
+    isinstance guard turned the missing key into [], so callers that resolve a
+    folder by name saw "no such folder", called create(), and got back "a
+    folder with this name already exists". That contradiction is what made the
+    bug expensive to diagnose, and it shipped because the test mock returned
+    the same wrong shape the code expected.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return json_response(
+            {
+                "folders": [
+                    {"id": "folder-1", "name": "Media", "parentId": None},
+                    {"id": "folder-2", "name": "Docs", "parentId": None},
+                ],
+                "pagination": {"page": 1, "limit": 50, "total": 2, "pages": 1},
+            }
+        )
+
+    client = client_for(handler)
+    ark = Ark("token", client=client)
+    folders = ark.folders.list()
+    assert [folder.name for folder in folders] == ["Media", "Docs"]
+    client.close()
+
+
+def test_folders_list_still_accepts_a_data_envelope() -> None:
+    """A deployment that has not been updated must keep working."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return json_response({"data": [{"id": "f1", "name": "Legacy", "parentId": None}]})
+
+    client = client_for(handler)
+    ark = Ark("token", client=client)
+    assert [folder.name for folder in ark.folders.list()] == ["Legacy"]
+    client.close()
+
+
+def test_folders_list_rejects_a_body_it_does_not_understand() -> None:
+    """An unrecognised body must not be silently reported as "no folders".
+
+    Returning () for a response the SDK failed to parse is what turned a
+    parsing bug into a workflow that could never succeed.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return json_response({"unexpected": []})
+
+    client = client_for(handler)
+    ark = Ark("token", client=client)
+    with pytest.raises(ArkError) as caught:
+        ark.folders.list()
+    assert caught.value.code == "INVALID_RESPONSE"
+    client.close()
+
+
+def test_folders_list_distinguishes_empty_from_unparseable() -> None:
+    """An genuinely empty folder list is still an empty tuple, not an error."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return json_response({"folders": [], "pagination": {"total": 0}})
+
+    client = client_for(handler)
+    ark = Ark("token", client=client)
+    assert ark.folders.list() == ()
+    client.close()
+
+
+def test_ark_error_exposes_message() -> None:
+    """The README documents `message`; only `str(error)` actually worked."""
+    error = ArkError("NOT_FOUND", "missing", status=404)
+    assert error.message == "missing"
+    assert str(error) == "missing"

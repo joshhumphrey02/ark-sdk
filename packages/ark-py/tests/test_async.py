@@ -199,3 +199,68 @@ async def test_async_upload_requires_stream_metadata() -> None:
     with pytest.raises(ArkError, match="filename is required"):
         await ark.files.upload(source(), size=4)
     await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_async_folders_list_reads_the_api_envelope() -> None:
+    """The async client had no folder coverage at all, which is why it carried
+    the same 'data' vs 'folders' bug as the sync client and nothing caught it.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return json_response(
+            {
+                "folders": [
+                    {"id": "folder-1", "name": "Media", "parentId": None},
+                    {"id": "folder-2", "name": "Docs", "parentId": "folder-1"},
+                ],
+                "pagination": {"page": 1, "limit": 50, "total": 2, "pages": 1},
+            }
+        )
+
+    client = async_client_for(handler)
+    ark = AsyncArk("token", client=client)
+    folders = await ark.folders.list()
+    assert [folder.name for folder in folders] == ["Media", "Docs"]
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_async_folders_list_still_accepts_a_data_envelope() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return json_response({"data": [{"id": "f1", "name": "Legacy", "parentId": None}]})
+
+    client = async_client_for(handler)
+    ark = AsyncArk("token", client=client)
+    assert [folder.name for folder in await ark.folders.list()] == ["Legacy"]
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_async_folders_list_rejects_an_unrecognised_body() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return json_response({"unexpected": []})
+
+    client = async_client_for(handler)
+    ark = AsyncArk("token", client=client)
+    with pytest.raises(ArkError) as caught:
+        await ark.folders.list()
+    assert caught.value.code == "INVALID_RESPONSE"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_async_folders_list_passes_parent_id_through() -> None:
+    """Nested resolution walks children level by level, so parentId has to
+    reach the query string for anything below the root to be listable."""
+    urls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        urls.append(str(request.url))
+        return json_response({"folders": [], "pagination": {"total": 0}})
+
+    client = async_client_for(handler)
+    ark = AsyncArk("token", client=client)
+    await ark.folders.list(parent_id="folder-1")
+    assert "parentId=folder-1" in urls[0]
+    await client.aclose()

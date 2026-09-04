@@ -21,6 +21,7 @@ from ._shared import (
     iter_exact,
     iter_file_range,
     parse_client_session,
+    parse_folder_list,
     query_string,
     read_exact,
     resolve_upload_source,
@@ -339,12 +340,7 @@ class Folders:
 
     def list(self, *, parent_id: str | None = None) -> tuple[ArkFolder, ...]:
         value = self._ark._request("GET", f"/folders{query_string({'parentId': parent_id})}")
-        raw_data = value.get("data")
-        return tuple(
-            ArkFolder.from_dict(item)
-            for item in (raw_data if isinstance(raw_data, list) else [])
-            if isinstance(item, Mapping)
-        )
+        return tuple(ArkFolder.from_dict(item) for item in parse_folder_list(value))
 
     def create(self, name: str, *, parent_id: str | None = None) -> ArkFolder:
         payload: dict[str, Any] = {"name": name}

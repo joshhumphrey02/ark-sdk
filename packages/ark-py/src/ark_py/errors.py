@@ -19,6 +19,11 @@ class ArkError(Exception):
     ) -> None:
         super().__init__(message)
         self.code = code
+        # Kept as an attribute, not just handed to Exception. The README
+        # documents `error.message`, and only `str(error)` actually worked --
+        # so every caller following the docs hit an AttributeError inside
+        # their own error handler, which is the worst possible place for one.
+        self.message = message
         self.status = status
         self.request_id = request_id
         self.details = details
@@ -81,6 +86,18 @@ def upload_error(status: int, *, part_number: int | None = None) -> ArkError:
 
 def invalid_argument(message: str) -> ArkError:
     return ArkError("INVALID_ARGUMENT", message)
+
+
+def invalid_response(message: str) -> ArkError:
+    """A 2xx body the SDK could not make sense of.
+
+    Coercing an unrecognised shape to an empty list is what turned a one-line
+    parsing bug into a workflow that could never succeed: `list()` reported no
+    folders, `create()` then refused because the folder was already there, and
+    nothing anywhere raised. Failing loudly here means the next such mismatch
+    is a stack trace pointing at the response, not a silent wrong answer.
+    """
+    return ArkError("INVALID_RESPONSE", message)
 
 
 def _optional_string(value: object) -> str | None:

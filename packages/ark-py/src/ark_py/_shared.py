@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, BinaryIO
 from urllib.parse import quote, urlencode
 
-from .errors import invalid_argument
+from .errors import invalid_argument, invalid_response
 from .models import ClientSession, ImageOptions
 
 DEFAULT_BASE_URL = "https://ark.nerdstackgrp.com"
@@ -40,6 +40,34 @@ def image_url(base_url: str, version: str, asset_id: str, options: ImageOptions)
         query["watermark"] = "1"
     suffix = f"?{urlencode(query)}" if query else ""
     return api_url(base_url, version, f"/assets/{segment(asset_id)}/image{suffix}")
+
+
+def parse_folder_list(value: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    """Pull the folder array out of a GET /folders body.
+
+    The two list endpoints do not share an envelope: /files returns
+    ``{"data": [...], "nextCursor": ...}`` while /folders returns
+    ``{"folders": [...], "pagination": {...}}``. The SDK read ``data`` for
+    both, so folders.list() returned nothing against every real workspace --
+    silently, because a missing key was coerced to an empty list.
+
+    Both keys are accepted so an older deployment keeps working, and anything
+    else raises rather than reporting an empty folder list that the caller
+    cannot distinguish from a real one.
+
+    Lives here rather than in each client because the identical parsing was
+    duplicated in sync.py and async_client.py -- which is why one bug needed
+    fixing in two places.
+    """
+    for key in ("folders", "data"):
+        raw = value.get(key)
+        if isinstance(raw, list):
+            return [item for item in raw if isinstance(item, Mapping)]
+
+    raise invalid_response(
+        "The folder list response was not in a recognised format. "
+        f"Expected a 'folders' array, got keys: {sorted(map(str, value.keys())) or 'none'}."
+    )
 
 
 def parse_client_session(value: Mapping[str, Any]) -> ClientSession:
