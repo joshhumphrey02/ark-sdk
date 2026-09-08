@@ -145,6 +145,7 @@ export type ArkErrorCode =
   | "NOT_FOUND"
   | "NETWORK_ERROR"
   | "RATE_LIMITED"
+  | "BLOCKED_BY_EDGE"
   | "INTERNAL_ERROR";
 
 export type ArkClientOptions = {

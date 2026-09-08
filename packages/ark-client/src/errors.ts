@@ -35,7 +35,14 @@ export class ArkError extends Error {
    * customer's rate limit and delays a real error reaching them.
    */
   get retryable() {
-    if (this.code === "NETWORK_ERROR" || this.code === "RATE_LIMITED") return true;
+    // BLOCKED_BY_EDGE is retryable: the request never reached Ark, and a
+    // challenge can clear on a subsequent attempt or once the block is lifted.
+    if (
+      this.code === "NETWORK_ERROR" ||
+      this.code === "RATE_LIMITED" ||
+      this.code === "BLOCKED_BY_EDGE"
+    )
+      return true;
     return this.status !== null && this.status >= 500;
   }
 }
@@ -51,6 +58,26 @@ const STATUS_CODES: Record<number, ArkErrorCode> = {
   429: "RATE_LIMITED",
 };
 
+/**
+ * Whether a failing response came from something in front of Ark rather than
+ * from Ark itself.
+ *
+ * The Ark API answers every request -- success or error -- with JSON, so an
+ * HTML body on an error response cannot have come from Ark. In practice it is
+ * a CDN or WAF challenge page: server-side SDK calls originate from data-centre
+ * IP ranges (Vercel, Netlify, Fly, Railway, AWS Lambda), which bot protection
+ * scores as automated traffic and answers with an interstitial.
+ *
+ * Detected by content type rather than by matching challenge text, so this
+ * holds for any interposed proxy and does not depend on one vendor's wording.
+ */
+function isEdgeBlock(response: Response, body: unknown): boolean {
+  if (body !== null) return false;
+  if (response.status !== 403 && response.status !== 503 && response.status !== 429) return false;
+  const contentType = response.headers.get("content-type") || "";
+  return contentType.includes("text/html");
+}
+
 /** Turns an Ark API error envelope into an ArkError. */
 export async function errorFromResponse(response: Response): Promise<ArkError> {
   let body: any = null;
@@ -58,6 +85,24 @@ export async function errorFromResponse(response: Response): Promise<ArkError> {
     body = await response.json();
   } catch {
     // A non-JSON body (a proxy error page, say) is not worth surfacing raw.
+  }
+
+  // Reported before the status mapping below, which would otherwise call this
+  // INSUFFICIENT_SCOPE and send the developer to audit a token that is fine.
+  if (isEdgeBlock(response, body)) {
+    const ray = response.headers.get("cf-ray");
+    return new ArkError({
+      code: "BLOCKED_BY_EDGE",
+      message:
+        "The request was blocked by a network in front of Ark and never reached it. " +
+        "This usually means bot protection challenged the call because it came from a " +
+        "data-centre IP, which is where server-side code runs. " +
+        "The site owner can allow it by exempting the API path from the challenge." +
+        (ray ? ` Reference: cf-ray ${ray}.` : ""),
+      status: response.status,
+      requestId: ray,
+      details: ray ? { cfRay: ray } : null,
+    });
   }
   const rawError = body?.error;
   const envelope = rawError && typeof rawError === "object" ? rawError : {};

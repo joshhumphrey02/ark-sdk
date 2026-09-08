@@ -30,16 +30,55 @@ class ArkError(Exception):
 
     @property
     def retryable(self) -> bool:
-        return self.code in {"NETWORK_ERROR", "RATE_LIMITED"} or (
+        # BLOCKED_BY_EDGE is retryable: the request never reached Ark, and a
+        # challenge can clear on a retry or once the block is lifted.
+        return self.code in {"NETWORK_ERROR", "RATE_LIMITED", "BLOCKED_BY_EDGE"} or (
             self.status is not None and self.status >= 500
         )
 
 
+def _is_edge_block(response: httpx.Response, parsed: bool) -> bool:
+    """Whether a failure came from something in front of Ark rather than Ark.
+
+    The Ark API answers every request -- success or error -- with JSON, so an
+    HTML body on an error response cannot have come from Ark. In practice it is
+    a CDN or WAF challenge page: server-side SDK calls originate from
+    data-centre IP ranges, which bot protection scores as automated traffic.
+
+    Detected by content type rather than by matching challenge text, so this
+    holds for any interposed proxy and not just one vendor's wording.
+    """
+    if parsed:
+        return False
+    if response.status_code not in {403, 503, 429}:
+        return False
+    return "text/html" in response.headers.get("content-type", "")
+
+
 def error_from_response(response: httpx.Response) -> ArkError:
+    parsed = True
     try:
         body = response.json()
     except ValueError:
         body = {}
+        parsed = False
+
+    # Reported before the status mapping below, which would otherwise call this
+    # INSUFFICIENT_SCOPE and send the developer to audit a token that is fine.
+    if _is_edge_block(response, parsed):
+        ray = response.headers.get("cf-ray")
+        return ArkError(
+            "BLOCKED_BY_EDGE",
+            "The request was blocked by a network in front of Ark and never reached it. "
+            "This usually means bot protection challenged the call because it came from a "
+            "data-centre IP, which is where server-side code runs. "
+            "The site owner can allow it by exempting the API path from the challenge."
+            + (f" Reference: cf-ray {ray}." if ray else ""),
+            status=response.status_code,
+            request_id=ray,
+            details={"cfRay": ray} if ray else None,
+        )
+
     raw_error = body.get("error") if isinstance(body, dict) else None
     envelope = raw_error if isinstance(raw_error, dict) else {}
     status_codes = {

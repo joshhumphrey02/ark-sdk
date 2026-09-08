@@ -18,6 +18,7 @@ export type ArkErrorCode =
   | "SIGNATURE_INVALID"
   | "RATE_LIMITED"
   | "NETWORK_ERROR"
+  | "BLOCKED_BY_EDGE"
   | "INTERNAL_ERROR";
 
 export class ArkError extends Error {
@@ -39,7 +40,14 @@ export class ArkError extends Error {
   }
 
   get retryable() {
-    if (this.code === "RATE_LIMITED" || this.code === "NETWORK_ERROR") return true;
+    // BLOCKED_BY_EDGE is retryable: the request never reached Ark, and a
+    // challenge can clear on a retry or once the block is lifted.
+    if (
+      this.code === "RATE_LIMITED" ||
+      this.code === "NETWORK_ERROR" ||
+      this.code === "BLOCKED_BY_EDGE"
+    )
+      return true;
     return this.status !== null && this.status >= 500;
   }
 }
@@ -76,6 +84,11 @@ const ARK_MESSAGES: Record<ArkErrorCode, string> = {
     "The request signature was not valid. Check the system clock and the credentials in use.",
   RATE_LIMITED: "Too many requests. Retry shortly.",
   NETWORK_ERROR: "The storage service could not be reached.",
+  BLOCKED_BY_EDGE:
+    "The request was blocked by a network in front of Ark and never reached it. " +
+    "This usually means bot protection challenged the call because it came from a " +
+    "data-centre IP, which is where server-side code runs. The site owner can allow " +
+    "it by exempting the API path from the challenge.",
   INTERNAL_ERROR: "The storage service is temporarily unavailable.",
 };
 
@@ -98,6 +111,24 @@ export function errorFromS3Xml(body: string, status: number): ArkError {
   });
 }
 
+/**
+ * Whether a failure came from something in front of Ark rather than from Ark.
+ *
+ * The Ark API answers every request -- success or error -- with JSON, so an
+ * HTML body on an error response cannot have come from Ark. In practice it is a
+ * CDN or WAF challenge page. This package is the one most exposed to it: server
+ * SDK calls run on Vercel, Netlify, Fly, Railway and Lambda, whose data-centre
+ * IP ranges bot protection scores as automated traffic.
+ *
+ * Detected by content type rather than by matching challenge text, so this
+ * holds for any interposed proxy and not just one vendor's wording.
+ */
+function isEdgeBlock(response: Response, body: unknown): boolean {
+  if (body !== null) return false;
+  if (response.status !== 403 && response.status !== 503 && response.status !== 429) return false;
+  return (response.headers.get("content-type") || "").includes("text/html");
+}
+
 export async function errorFromRest(response: Response): Promise<ArkError> {
   let body: any = null;
   try {
@@ -105,6 +136,19 @@ export async function errorFromRest(response: Response): Promise<ArkError> {
   } catch {
     // Non-JSON bodies carry nothing worth surfacing.
   }
+
+  // Checked before the status mapping below, which would otherwise report this
+  // as INSUFFICIENT_SCOPE and send the developer to audit a token that is fine.
+  if (isEdgeBlock(response, body)) {
+    const ray = response.headers.get("cf-ray");
+    return new ArkError({
+      code: "BLOCKED_BY_EDGE",
+      message: ARK_MESSAGES.BLOCKED_BY_EDGE + (ray ? ` Reference: cf-ray ${ray}.` : ""),
+      status: response.status,
+      requestId: ray,
+    });
+  }
+
   const rawError = body?.error;
   const envelope = rawError && typeof rawError === "object" ? rawError : {};
   const statusCodes: Record<number, ArkErrorCode> = {
