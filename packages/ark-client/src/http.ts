@@ -97,7 +97,7 @@ export function putWithProgress(input: {
   onProgress?: (uploadedBytes: number, totalBytes: number) => void;
   signal?: AbortSignal;
   fetchImpl?: typeof fetch;
-}): Promise<{ status: number; etag: string | null }> {
+}): Promise<{ status: number; etag: string | null; body: string }> {
   if (input.signal?.aborted) {
     return Promise.reject(new ArkError({ code: "UPLOAD_ABORTED", message: "Upload aborted" }));
   }
@@ -109,9 +109,13 @@ export function putWithProgress(input: {
       body: input.body as BodyInit,
       headers: input.headers,
       signal: input.signal,
-    }).then((response) => ({
+    }).then(async (response) => ({
       status: response.status,
       etag: (response.headers.get("etag") || "").replace(/"/g, "") || null,
+      // Ark returns a part's ETag in the response body. Reading it from a
+      // header would require the upload origin to expose it cross-origin,
+      // which is one of the things routing bytes through Ark removes.
+      body: await response.text().catch(() => ""),
     }));
   }
 
@@ -131,6 +135,7 @@ export function putWithProgress(input: {
       resolve({
         status: xhr.status,
         etag: (xhr.getResponseHeader("etag") || "").replace(/"/g, "") || null,
+        body: xhr.responseText || "",
       });
     };
     xhr.onerror = () => {

@@ -34,6 +34,17 @@ function pathSegment(value: string) {
   return encodeURIComponent(value);
 }
 
+/** The ETag from an Ark part response, or null if the body is not one. */
+function etagFromBody(body: string): string | null {
+  if (!body) return null;
+  try {
+    const parsed = JSON.parse(body) as { etag?: unknown };
+    return typeof parsed.etag === "string" && parsed.etag ? parsed.etag : null;
+  } catch {
+    return null;
+  }
+}
+
 function streamQuery(appId?: string, extra?: { limit?: number; cursor?: string }) {
   const query = new URLSearchParams();
   if (appId) query.set("appId", appId);
@@ -97,6 +108,24 @@ export class ArkClient {
   /** Endpoints are composed from a single place so nothing hardcodes /v2 (§56). */
   #url(path: string) {
     return `${this.#baseUrl}/api/${pathSegment(this.#version)}${path}`;
+  }
+
+  /**
+   * The auth header for an upload URL, and only when that URL is Ark's own.
+   *
+   * Upload bytes now go to Ark rather than to a provider, so the PUT has to
+   * carry the session token like any other call. Matching the origin first
+   * matters: a session that still hands back a provider URL must never have
+   * the token attached, because that would put the credential in a request to
+   * a third party.
+   */
+  #uploadAuthFor(url: string): Record<string, string> {
+    try {
+      if (new URL(url).origin !== new URL(this.#baseUrl).origin) return {};
+    } catch {
+      return {};
+    }
+    return { authorization: `Bearer ${this.#token}` };
   }
 
   async #request<T>(
@@ -451,7 +480,14 @@ export class ArkClient {
     const result = await putWithProgress({
       url: session.url,
       body: file,
-      headers: { "content-type": contentType, ...session.headers },
+      // The bytes go to Ark, which authenticates them like any other call.
+      // `session.headers` is whatever the session still requires, and is empty
+      // when Ark is carrying the bytes itself.
+      headers: {
+        "content-type": contentType,
+        ...this.#uploadAuthFor(session.url),
+        ...session.headers,
+      },
       onProgress: (uploaded) => report(uploaded),
       signal,
       fetchImpl: this.#fetch,
@@ -496,6 +532,7 @@ export class ArkClient {
         const result = await putWithProgress({
           url: part.url,
           body: chunk,
+          headers: this.#uploadAuthFor(part.url),
           onProgress: (uploaded) => {
             uploadedPerPart.set(part.partNumber, uploaded);
             let total = 0;
@@ -508,14 +545,17 @@ export class ArkClient {
         if (result.status < 200 || result.status >= 300) {
           throw uploadErrorFor(result.status, "part");
         }
-        if (!result.etag) {
+        // Ark returns the part's ETag in the JSON body; the header is the
+        // fallback for a session still pointed at a provider URL.
+        const etag = etagFromBody(result.body) ?? result.etag;
+        if (!etag) {
           throw new ArkError({
             code: "UPLOAD_FAILED",
             message: `Part ${part.partNumber} did not return an ETag`,
           });
         }
         uploadedPerPart.set(part.partNumber, chunk.size);
-        etags.push({ partNumber: part.partNumber, etag: result.etag });
+        etags.push({ partNumber: part.partNumber, etag });
       }
     };
 
