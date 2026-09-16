@@ -113,11 +113,11 @@ export class ArkClient {
   /**
    * The auth header for an upload URL, and only when that URL is Ark's own.
    *
-   * Upload bytes now go to Ark rather than to a provider, so the PUT has to
-   * carry the session token like any other call. Matching the origin first
-   * matters: a session that still hands back a provider URL must never have
-   * the token attached, because that would put the credential in a request to
-   * a third party.
+   * The fallback path PUTs to Ark, which authenticates it like any other call.
+   * Matching the origin first is the point: the primary path PUTs to the
+   * provider, whose URL must never carry the session token -- that would send
+   * the credential to a third party, and the presigned signature is already
+   * the only authorization that request needs.
    */
   #uploadAuthFor(url: string): Record<string, string> {
     try {
