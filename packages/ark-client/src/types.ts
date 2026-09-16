@@ -162,13 +162,22 @@ export type ArkClientOptions = {
   fetch?: typeof fetch;
 };
 
+/**
+ * `url` goes straight to the storage provider, which is the fast path: the
+ * bytes reach the nearest provider edge instead of travelling via Ark.
+ *
+ * `fallbackUrl` carries the same bytes through Ark. It is used when the direct
+ * PUT cannot complete -- most often because the bucket publishes no CORS
+ * policy, which a browser reports as an opaque network failure. Absent on an
+ * older server, in which case there is nothing to fall back to.
+ */
 export type ArkMultipartSession = {
   uploadId: string;
   fileId: string;
   multipart: true;
   partSize: number;
   partCount: number;
-  parts: { partNumber: number; url: string }[];
+  parts: { partNumber: number; url: string; fallbackUrl?: string }[];
   maxConcurrency: number;
   expiresAt: string;
 };
@@ -180,6 +189,7 @@ export type ArkSingleUploadSession = {
   method: "PUT";
   url: string;
   headers: Record<string, string>;
+  fallbackUrl?: string;
   expiresAt: string;
 };
 

@@ -477,26 +477,77 @@ export class ArkClient {
     report: (bytes: number) => void,
     signal: AbortSignal,
   ) {
-    const result = await putWithProgress({
+    const result = await this.#putWithFallback({
       url: session.url,
+      fallbackUrl: session.fallbackUrl,
       body: file,
-      // The bytes go to Ark, which authenticates them like any other call.
-      // `session.headers` is whatever the session still requires, and is empty
-      // when Ark is carrying the bytes itself.
-      headers: {
-        "content-type": contentType,
-        ...this.#uploadAuthFor(session.url),
-        ...session.headers,
-      },
+      headers: { "content-type": contentType, ...session.headers },
       onProgress: (uploaded) => report(uploaded),
       signal,
-      fetchImpl: this.#fetch,
     });
     if (result.status < 200 || result.status >= 300) {
       throw uploadErrorFor(result.status, "single");
     }
     report(file.size);
     return undefined;
+  }
+
+  /**
+   * PUT to the provider, and retry through Ark if that cannot complete.
+   *
+   * The direct URL is the fast path: the bytes go to the nearest provider edge
+   * rather than through Ark's single origin. It fails outright when the bucket
+   * publishes no CORS policy -- the browser refuses the preflight and reports
+   * an opaque network error with no response to inspect, which is
+   * indistinguishable from the provider being down.
+   *
+   * Falling back on that rather than surfacing it keeps an upload working
+   * through a CORS gap, a proxy that strips preflights, or a network that
+   * blocks the provider. A response that did arrive is returned as-is: a 403
+   * from the provider is a real answer about this upload, and retrying it
+   * through Ark would only spend the bytes twice.
+   */
+  async #putWithFallback(input: {
+    url: string;
+    fallbackUrl?: string;
+    body: Blob;
+    headers?: Record<string, string>;
+    onProgress: (uploadedBytes: number) => void;
+    signal: AbortSignal;
+  }) {
+    try {
+      return await putWithProgress({
+        url: input.url,
+        body: input.body,
+        headers: { ...this.#uploadAuthFor(input.url), ...input.headers },
+        onProgress: input.onProgress,
+        signal: input.signal,
+        fetchImpl: this.#fetch,
+      });
+    } catch (error) {
+      const aborted =
+        input.signal.aborted ||
+        (error instanceof ArkError && error.code === "UPLOAD_ABORTED");
+      if (!input.fallbackUrl || aborted) throw error;
+      // Progress restarts from zero for the retried transfer, so the reported
+      // total does not jump backwards mid-upload.
+      input.onProgress(0);
+      return await putWithProgress({
+        url: input.fallbackUrl,
+        body: input.body,
+        headers: {
+          ...this.#uploadAuthFor(input.fallbackUrl),
+          // The provider's required headers belong to the presigned URL, not
+          // to Ark, which sets whatever the provider needs when it forwards.
+          ...(input.headers?.["content-type"]
+            ? { "content-type": input.headers["content-type"] }
+            : {}),
+        },
+        onProgress: input.onProgress,
+        signal: input.signal,
+        fetchImpl: this.#fetch,
+      });
+    }
   }
 
   /**
@@ -529,10 +580,10 @@ export class ArkClient {
         const start = (part.partNumber - 1) * session.partSize;
         const chunk = file.slice(start, Math.min(start + session.partSize, file.size));
 
-        const result = await putWithProgress({
+        const result = await this.#putWithFallback({
           url: part.url,
+          fallbackUrl: part.fallbackUrl,
           body: chunk,
-          headers: this.#uploadAuthFor(part.url),
           onProgress: (uploaded) => {
             uploadedPerPart.set(part.partNumber, uploaded);
             let total = 0;
@@ -540,14 +591,15 @@ export class ArkClient {
             report(total);
           },
           signal: controller.signal,
-          fetchImpl: this.#fetch,
         });
         if (result.status < 200 || result.status >= 300) {
           throw uploadErrorFor(result.status, "part");
         }
-        // Ark returns the part's ETag in the JSON body; the header is the
-        // fallback for a session still pointed at a provider URL.
-        const etag = etagFromBody(result.body) ?? result.etag;
+        // A direct provider upload returns the ETag as a header, which the
+        // bucket's CORS policy must expose. The Ark fallback returns it in the
+        // JSON body instead, so a part that went through Ark still completes
+        // even where ExposeHeaders is missing.
+        const etag = result.etag ?? etagFromBody(result.body);
         if (!etag) {
           throw new ArkError({
             code: "UPLOAD_FAILED",
