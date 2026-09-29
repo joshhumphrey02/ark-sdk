@@ -1,0 +1,7 @@
+# `files` in package.json is the allowlist; this is a backstop so build and
+# test artifacts can never be published by accident.
+src/
+tsup.config.ts
+tsconfig.json
+*.tsbuildinfo
+*.tgz
