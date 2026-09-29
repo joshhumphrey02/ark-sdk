@@ -1,14 +1,16 @@
 # ark-sdk
 
-SDKs for Ark storage. One repo, three surfaces: `@nerdstackgrp/ark-client` for direct
-browser uploads, `@nerdstackgrp/ark-server` for TypeScript backends, and
-`nerdstack-ark` for Python frameworks and workers.
+Nerdstack SDKs. For Ark storage: `@nerdstackgrp/ark-client` for direct browser
+uploads, `@nerdstackgrp/ark-server` for TypeScript backends, and `nerdstack-ark`
+for Python frameworks and workers. For operations: `@nerdstackgrp/monitoring`
+reports health, errors and deployments to Nerdstack Monitoring.
 
 ## Install
 
 ```bash
 npm install @nerdstackgrp/ark-client   # browser
 npm install @nerdstackgrp/ark-server   # backend
+npm install @nerdstackgrp/monitoring   # service monitoring (Node/Bun)
 ```
 
 Both ship ESM and CommonJS builds with TypeScript declarations, and have zero
@@ -80,6 +82,28 @@ streams; the declared size must match the bytes produced.
 
 The S3 endpoint also works with the official AWS SDK, AWS CLI, and rclone.
 
+### `@nerdstackgrp/monitoring`
+
+Heartbeats, error reporting, releases and opt-in HTTP instrumentation for any
+Node or Bun service owned or managed by Nerdstack. If Nerdstack is
+unreachable, the application is unaffected.
+
+```ts
+import { createMonitoring } from "@nerdstackgrp/monitoring";
+
+const monitoring = createMonitoring({
+  endpoint: process.env.MONITORING_URL!,  // https://nerdstackgrp.com
+  token: process.env.MONITORING_TOKEN!,   // nsk_live_…, from Monitoring → Applications
+  service: "ark-api",
+});
+monitoring.start();
+
+monitoring.captureException(error, { requestId });
+await monitoring.reportRelease({ version: "2.4.1", commit: "a82f91c" });
+```
+
+See [`packages/monitoring/README.md`](packages/monitoring/README.md).
+
 ### `nerdstack-ark` for Python
 
 The [`packages/ark-py/`](packages/ark-py) package provides synchronous and asynchronous Ark
@@ -112,6 +136,7 @@ The TypeScript packages require Node.js >= 20 and ship ESM, CommonJS, and declar
 
 - `examples/browser-upload/` — React widget with direct uploads and progress
 - `examples/backend-usage/` — REST and S3 usage patterns
+- `examples/monitoring/` — a Node/Bun API wired to Nerdstack Monitoring
 
 ## Docs
 
@@ -121,7 +146,7 @@ The TypeScript packages require Node.js >= 20 and ship ESM, CommonJS, and declar
 
 ```bash
 npm install        # installs workspaces
-npm run typecheck  # tsc --noEmit, both packages
+npm run typecheck  # tsc --noEmit, every package
 npm run build      # tsup -> dist/ (ESM + CJS + .d.ts)
 
 cd packages/ark-py
