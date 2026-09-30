@@ -1,6 +1,6 @@
 # `@nerdstackgrp/monitoring`
 
-Report a service's health, errors and deployments to Nerdstack Operations, a
+Report a service's health, errors and deployments to Nex, a
 multi-tenant application monitoring platform.
 
 ```ts
@@ -34,7 +34,7 @@ npm install @nerdstackgrp/monitoring
 
 ## Configuration
 
-Add the application and its services in the Operations app, then create an
+Add the application and its services in Nex, then create an
 SDK token for the environment this deployment runs in (**Application →
 Settings → SDK tokens**); it is shown once. A token belongs to one
 application environment and can only report. Then set:
