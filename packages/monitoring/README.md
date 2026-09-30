@@ -296,7 +296,7 @@ listening for these events disables the default crash, so the SDK restores it:
   reports.
 
 Monitoring never keeps a crashed process running, and an unreachable
-The SDK delays the crash by at most `flushTimeout`. The function returns an
+API delays the crash by at most `flushTimeout`. The function returns an
 uninstaller.
 
 ## Security and redaction
