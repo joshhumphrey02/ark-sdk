@@ -616,7 +616,7 @@ export class Monitoring {
 
     const payload: ReleasePayload = {
       version: truncate(version, 64),
-      ...(commit ? { commit: truncate(commit, 64) } : {}),
+      ...(commit ? { commitSha: truncate(commit, 64) } : {}),
       ...(service ? { service } : {}),
       ...(environment ? { environment } : {}),
       ...(deployedAt ? { deployedAt } : {}),
@@ -758,8 +758,8 @@ export class Monitoring {
 }
 
 /**
- * Creates a client. With no arguments it reads MONITORING_URL,
- * MONITORING_TOKEN, MONITORING_SERVICE, APP_VERSION and NODE_ENV.
+ * Creates a client. With no arguments it reads MONITORING_API_URL,
+ * MONITORING_TOKEN, MONITORING_SERVICE, APP_VERSION and MONITORING_ENVIRONMENT.
  * Throws `MonitoringConfigError` once, at startup, if misconfigured.
  */
 export function createMonitoring(options: MonitoringOptions = {}): Monitoring {

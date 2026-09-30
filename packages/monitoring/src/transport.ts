@@ -26,7 +26,6 @@ const MAX_PAUSE_MS = 5 * 60_000;
 const FAILURES_BEFORE_PAUSE = 3;
 /** Never sleep longer than this between retries; longer waits become a pause. */
 const MAX_RETRY_WAIT_MS = 10_000;
-const API_PREFIX = "/api/v1/monitoring";
 const USER_AGENT = "nerdstack-monitoring-js/0.1.0";
 
 export type Clock = {
@@ -138,7 +137,7 @@ export class Transport {
     }, this.config.requestTimeout);
 
     try {
-      const response = await this.config.fetch(`${this.config.endpoint}${API_PREFIX}${path}`, {
+      const response = await this.config.fetch(`${this.config.endpoint}${path}`, {
         method,
         headers: {
           authorization: `Bearer ${this.config.token}`,

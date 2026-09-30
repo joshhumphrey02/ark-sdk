@@ -1,6 +1,6 @@
 /**
- * The Nerdstack Monitoring API contract, as implemented by the control plane
- * at `/api/v1/monitoring/*` (nerdstack-technologies, docs/monitoring/api.md).
+ * The monitoring API contract (nerdstack-technologies, docs/monitoring/API.md),
+ * relative to the configured `MONITORING_API_URL`.
  *
  * These types describe what goes over the wire. They are exported so a
  * caller can build payloads or read responses with the same names the server
@@ -16,6 +16,7 @@ export type MonitoringLevel = "info" | "warning" | "error" | "critical";
 export const MONITORING_EVENT_TYPES = [
   "exception",
   "error",
+  "message",
   "warning",
   "startup",
   "shutdown",
@@ -32,7 +33,10 @@ export type MonitoringStatus = "healthy" | "degraded" | "unhealthy" | "down";
 /** Health of one dependency. `unknown` when it could not be determined. */
 export type DependencyStatus = MonitoringStatus | "unknown";
 
-/** The only environments the API accepts. */
+/**
+ * The environment names the SDK normalises to. A token is scoped to one
+ * environment, so the server uses the token's own when none is sent.
+ */
 export type MonitoringEnvironment = "production" | "staging" | "development";
 
 export type JsonPrimitive = string | number | boolean | null;
@@ -41,9 +45,11 @@ export type JsonObject = { [key: string]: JsonValue };
 
 // --- Request bodies ------------------------------------------------------------
 
-/** `POST /api/v1/monitoring/heartbeat` */
+/** `POST {apiUrl}/heartbeat` */
 export interface HeartbeatPayload {
   service: string;
+  /** A specific HEARTBEAT/CRON monitor, e.g. a cron job's check-in. */
+  monitor?: string;
   status: MonitoringStatus;
   version?: string;
   /** Seconds since the process started. */
@@ -56,22 +62,26 @@ export interface HeartbeatPayload {
   timestamp?: string;
 }
 
-/** One event in `POST /api/v1/monitoring/events`. */
+/** One event in `POST {apiUrl}/events`. */
 export interface EventPayload {
   type: MonitoringEventType;
   severity: MonitoringSeverity;
   message: string;
   service?: string;
   environment?: MonitoringEnvironment;
+  /** The release (version) that produced the event. */
+  release?: string;
   error?: { name?: string; message?: string; stack?: string };
   metadata?: JsonObject;
   /** ISO-8601 with offset. */
   timestamp?: string;
 }
 
-/** `POST /api/v1/monitoring/releases` */
+/** `POST {apiUrl}/releases` */
 export interface ReleasePayload {
   version: string;
+  commitSha?: string;
+  /** Older name for commitSha; still accepted. */
   commit?: string;
   service?: string;
   environment?: MonitoringEnvironment;
@@ -84,6 +94,8 @@ export interface ReleasePayload {
 export interface HeartbeatResponse {
   ok: true;
   service: string;
+  monitor: string;
+  environment: string;
   receivedAt: string;
   /** How often the server expects a heartbeat from this service. */
   expectedIntervalSeconds: number;
@@ -101,32 +113,33 @@ export interface ReleaseResponse {
     id: string;
     applicationId: string;
     application: string;
+    environmentId: string;
+    environment: string;
     serviceId: string | null;
     service: string | null;
     version: string;
     previousVersion: string | null;
-    commit: string | null;
-    environment: string | null;
+    commitSha: string | null;
     deployedAt: string;
   };
 }
 
-/** `GET /api/v1/monitoring/config` */
+/** `GET {apiUrl}/config` */
 export interface ApplicationConfigResponse {
   application: {
     id: string;
     slug: string;
     name: string;
-    environment: "PRODUCTION" | "STAGING" | "DEVELOPMENT";
     ownership: "OWNED" | "MANAGED";
     maintenance: boolean;
   };
+  /** The environment this token reports for. */
+  environment: { id: string; slug: string; name: string; kind: "PRODUCTION" | "STAGING" | "DEVELOPMENT" };
   services: {
     slug: string;
     name: string;
     type: string;
-    kind: "SERVICE" | "WEBSITE";
-    enabled: boolean;
+    monitors: { slug: string; type: "HTTP" | "API" | "TCP" | "HEARTBEAT" | "CRON" | "WEBSITE"; enabled: boolean }[];
     heartbeatIntervalSeconds: number;
   }[];
   limits: { maxBodyBytes: number; maxEventsPerRequest: number; messageChars: number; stackChars: number };

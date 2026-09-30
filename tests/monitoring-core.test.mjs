@@ -23,6 +23,7 @@ import { TOKEN, captureLogger, fakeApi, json, makeClient, sleep } from "./monito
 test("missing configuration fails at startup, listing every problem", () => {
   const saved = { ...process.env };
   delete process.env.MONITORING_URL;
+  delete process.env.MONITORING_API_URL;
   delete process.env.MONITORING_TOKEN;
   delete process.env.MONITORING_SERVICE;
   try {
@@ -69,6 +70,34 @@ test("an endpoint that already includes the API path is accepted", async () => {
   assert.equal(api.calls[0].url, "https://nerdstackgrp.com/api/v1/monitoring/heartbeat");
 });
 
+test("apiUrl is used exactly as given, so the API can move to any host and path", async () => {
+  const api = fakeApi();
+  const monitoring = makeClient(api, { endpoint: undefined, apiUrl: "https://api.example.com/v1/" });
+  await monitoring.heartbeat();
+  assert.equal(api.calls[0].url, "https://api.example.com/v1/heartbeat");
+});
+
+test("apiUrl wins over the older endpoint, and both are validated", () => {
+  const base = { token: TOKEN, service: "ark-api", logger: null };
+  assert.throws(() => createMonitoring({ ...base, apiUrl: "http://api.example.com/v1" }), /apiUrl must use https/);
+  assert.throws(() => createMonitoring({ ...base, apiUrl: "https://u:p@api.example.com/v1" }), /credentials/);
+  assert.doesNotThrow(() => createMonitoring({ ...base, apiUrl: "http://localhost:3000/api/v1/monitoring", endpoint: "not a url" }));
+});
+
+test("MONITORING_API_URL configures the SDK from the environment", async () => {
+  const saved = { ...process.env };
+  Object.assign(process.env, { MONITORING_API_URL: "https://ops.example.com/api/v1/monitoring", MONITORING_TOKEN: TOKEN, MONITORING_SERVICE: "api" });
+  delete process.env.MONITORING_URL;
+  try {
+    const api = fakeApi();
+    const monitoring = createMonitoring({ fetch: api.fetch, logger: null });
+    await monitoring.heartbeat();
+    assert.equal(api.calls[0].url, "https://ops.example.com/api/v1/monitoring/heartbeat");
+  } finally {
+    process.env = saved;
+  }
+});
+
 test("configuration can come entirely from the environment", async () => {
   const saved = { ...process.env };
   Object.assign(process.env, {
@@ -76,7 +105,10 @@ test("configuration can come entirely from the environment", async () => {
     MONITORING_TOKEN: TOKEN,
     MONITORING_SERVICE: "ace-api",
     APP_VERSION: "9.1.0",
-    NODE_ENV: "prod",
+    MONITORING_ENVIRONMENT: "prod",
+    // Ignored: the token decides the environment, and staging hosts often
+    // run with NODE_ENV=production.
+    NODE_ENV: "development",
   });
   try {
     const api = fakeApi();
@@ -429,7 +461,7 @@ test("reportRelease sends version, commit, service and environment", async () =>
   assert.equal(call.path, "/api/v1/monitoring/releases");
   assert.deepEqual(call.body, {
     version: "2.4.1",
-    commit: "a82f91c",
+    commitSha: "a82f91c",
     service: "ark-api",
     environment: "production",
     deployedAt: "2026-09-29T10:00:00.000Z",
@@ -445,7 +477,7 @@ test("release version and commit default from the environment", async () => {
     const monitoring = createMonitoring({ endpoint: "https://nerdstackgrp.com", token: TOKEN, service: "ark-api", fetch: api.fetch, logger: null });
     await monitoring.reportRelease({ service: null });
     assert.equal(api.calls[0].body.version, "3.0.0");
-    assert.equal(api.calls[0].body.commit, "deadbeef");
+    assert.equal(api.calls[0].body.commitSha, "deadbeef");
     assert.ok(!("service" in api.calls[0].body), "service: null reports an application-wide release");
   } finally {
     process.env = saved;

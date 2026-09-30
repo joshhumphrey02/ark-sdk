@@ -28,7 +28,18 @@ export type OutgoingEvent = {
 };
 
 export interface MonitoringOptions {
-  /** Nerdstack base URL, e.g. `https://nerdstackgrp.com`. Env: `MONITORING_URL`. */
+  /**
+   * The monitoring API's base URL, used as given, e.g.
+   * `https://nerdstackgrp.com/api/v1/monitoring` or `https://api.example.com/v1`.
+   * Env: `MONITORING_API_URL`. This is the only address the SDK knows, so the
+   * API can move without an SDK release.
+   */
+  apiUrl?: string;
+  /**
+   * Older form: the site origin, e.g. `https://nerdstackgrp.com`, to which
+   * `/api/v1/monitoring` is appended. Env: `MONITORING_URL`. Ignored when
+   * `apiUrl` is set.
+   */
   endpoint?: string;
   /** `nsk_live_…` / `nsk_test_…`. Env: `MONITORING_TOKEN`. */
   token?: string;
@@ -38,7 +49,13 @@ export interface MonitoringOptions {
   version?: string;
   /** Deploy commit for releases. Env: `APP_COMMIT`, `GIT_COMMIT`, `SOURCE_COMMIT`, `GITHUB_SHA`, `VERCEL_GIT_COMMIT_SHA`. */
   commit?: string;
-  /** Any common spelling (`prod`, `development`, `NODE_ENV`). Values the API does not accept (e.g. `test`) are omitted. Env: `MONITORING_ENVIRONMENT`, then `NODE_ENV`. */
+  /**
+   * Usually leave unset: the token already belongs to one environment, and
+   * the server uses it. When set, it must name the token's environment or the
+   * server refuses the report. Any common spelling (`prod`, `staging`).
+   * Env: `MONITORING_ENVIRONMENT`. NODE_ENV is deliberately not used: staging
+   * servers often run with NODE_ENV=production.
+   */
   environment?: string;
   /** Set false to make every call a no-op (tests, local dev). Env: `MONITORING_ENABLED=false`. */
   enabled?: boolean;
@@ -78,6 +95,7 @@ export interface MonitoringOptions {
 
 export type ResolvedConfig = {
   enabled: boolean;
+  /** The full API base URL, without a trailing slash. */
   endpoint: string;
   token: string;
   service: string;
@@ -153,27 +171,32 @@ export function normalizeEnvironment(value: string | undefined): MonitoringEnvir
   }
 }
 
+/** The API path under a site origin, for the older `endpoint` form. */
+const LEGACY_API_PATH = "/api/v1/monitoring";
+
 /**
- * Accepts the site origin, or a URL that already includes the API path, and
- * returns the origin + any base path without the API suffix.
+ * Validates a base URL and returns the API base to call. An `apiUrl` is used
+ * as given; a legacy `endpoint` origin gets the API path appended (unless it
+ * already ends with it).
  */
-function normalizeEndpoint(raw: string): { value: string; problem?: string } {
+function normalizeBaseUrl(raw: string, name: "apiUrl" | "endpoint"): { value: string; problem?: string } {
   let url: URL;
   try {
     url = new URL(raw);
   } catch {
-    return { value: raw, problem: "endpoint must be an absolute URL, e.g. https://nerdstackgrp.com" };
+    return { value: raw, problem: `${name} must be an absolute URL, e.g. https://api.example.com/v1` };
   }
   if (url.username || url.password) {
-    return { value: raw, problem: "endpoint must not contain credentials" };
+    return { value: raw, problem: `${name} must not contain credentials` };
   }
   const local = ["localhost", "127.0.0.1", "[::1]", "::1"].includes(url.hostname);
   if (url.protocol !== "https:" && !(url.protocol === "http:" && local)) {
     // The token rides in a header on every request; plain HTTP would expose it.
-    return { value: raw, problem: "endpoint must use https (http is allowed only for localhost)" };
+    return { value: raw, problem: `${name} must use https (http is allowed only for localhost)` };
   }
-  const path = url.pathname.replace(/\/+$/, "").replace(/\/api\/v1\/monitoring$/, "");
-  return { value: `${url.origin}${path}` };
+  const path = url.pathname.replace(/\/+$/, "");
+  if (name === "apiUrl") return { value: `${url.origin}${path}` };
+  return { value: `${url.origin}${path.replace(new RegExp(`${LEGACY_API_PATH}$`), "")}${LEGACY_API_PATH}` };
 }
 
 function positive(name: string, value: number | undefined, fallback: number, min: number, problems: string[]): number {
@@ -189,15 +212,17 @@ export function resolveConfig(options: MonitoringOptions = {}, env: Env = proces
   const enabled = options.enabled ?? env.MONITORING_ENABLED?.trim().toLowerCase() !== "false";
   const problems: string[] = [];
 
-  const endpointRaw = first(options.endpoint, env.MONITORING_URL);
+  const apiUrlRaw = first(options.apiUrl, env.MONITORING_API_URL);
+  const endpointRaw = apiUrlRaw ? undefined : first(options.endpoint, env.MONITORING_URL);
   const token = first(options.token, env.MONITORING_TOKEN) ?? "";
   const service = first(options.service, env.MONITORING_SERVICE) ?? "";
 
   let endpoint = "";
   if (enabled) {
-    if (!endpointRaw) problems.push("endpoint is required (option `endpoint` or MONITORING_URL)");
-    else {
-      const normalized = normalizeEndpoint(endpointRaw);
+    if (!apiUrlRaw && !endpointRaw) {
+      problems.push("apiUrl is required (option `apiUrl` or MONITORING_API_URL; the older `endpoint` / MONITORING_URL also works)");
+    } else {
+      const normalized = apiUrlRaw ? normalizeBaseUrl(apiUrlRaw, "apiUrl") : normalizeBaseUrl(endpointRaw!, "endpoint");
       endpoint = normalized.value;
       if (normalized.problem) problems.push(normalized.problem);
     }
@@ -215,7 +240,7 @@ export function resolveConfig(options: MonitoringOptions = {}, env: Env = proces
     service,
     version: first(options.version, env.APP_VERSION, env.npm_package_version),
     commit: first(options.commit, env.APP_COMMIT, env.GIT_COMMIT, env.SOURCE_COMMIT, env.GITHUB_SHA, env.VERCEL_GIT_COMMIT_SHA),
-    environment: normalizeEnvironment(first(options.environment, env.MONITORING_ENVIRONMENT, env.NODE_ENV)),
+    environment: normalizeEnvironment(first(options.environment, env.MONITORING_ENVIRONMENT)),
     heartbeatInterval: options.heartbeatInterval === undefined ? undefined : positive("heartbeatInterval", options.heartbeatInterval, 30_000, 1_000, problems),
     requestTimeout: positive("requestTimeout", options.requestTimeout, 3_000, 100, problems),
     maxBufferedEvents: Math.floor(positive("maxBufferedEvents", options.maxBufferedEvents, 100, 0, problems)),

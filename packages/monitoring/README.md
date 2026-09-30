@@ -1,28 +1,29 @@
 # `@nerdstackgrp/monitoring`
 
-Report a service's health, errors and deployments to
-[Nerdstack Monitoring](https://nerdstackgrp.com), the operations control plane
-for applications Nerdstack owns or manages.
+Report a service's health, errors and deployments to Nerdstack Operations, a
+multi-tenant application monitoring platform.
 
 ```ts
 import { createMonitoring } from "@nerdstackgrp/monitoring";
 
 const monitoring = createMonitoring({
-  endpoint: process.env.MONITORING_URL!,
+  apiUrl: process.env.MONITORING_API_URL!,
   token: process.env.MONITORING_TOKEN!,
-  service: "ark-api",
+  service: "api",
 });
 
 monitoring.start();
 ```
 
-Those four lines give Nerdstack a heartbeat every 30 seconds. The rest of this
+Those four lines report a heartbeat every 30 seconds. The rest of this
 document covers what else the SDK can do and how it behaves.
 
 - Node.js 20+ and Bun. Server-side only; there is no browser build.
 - Zero runtime dependencies, and no framework dependencies.
 - ESM, CommonJS and TypeScript declarations.
-- If Nerdstack is unreachable, your application does not notice.
+- If the monitoring API is unreachable, your application does not notice.
+- The SDK knows one address, `MONITORING_API_URL`, so the API can move to a
+  new host without an SDK release.
 
 ## Install
 
@@ -33,13 +34,15 @@ npm install @nerdstackgrp/monitoring
 
 ## Configuration
 
-Register the application and its services in Nerdstack (**Monitoring →
-Applications**). Generate a monitoring token there; it is shown once. Then set:
+Add the application and its services in the Operations app, then create an
+SDK token for the environment this deployment runs in (**Application →
+Settings → SDK tokens**); it is shown once. A token belongs to one
+application environment and can only report. Then set:
 
 ```env
-MONITORING_URL=https://nerdstackgrp.com
+MONITORING_API_URL=https://nerdstackgrp.com/api/v1/monitoring
 MONITORING_TOKEN=nsk_live_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-MONITORING_SERVICE=ark-api
+MONITORING_SERVICE=api
 APP_VERSION=2.4.1
 ```
 
@@ -47,12 +50,13 @@ With those set, `createMonitoring()` needs no arguments:
 
 | Option | Environment variable | Default |
 | --- | --- | --- |
-| `endpoint` | `MONITORING_URL` | required |
+| `apiUrl` | `MONITORING_API_URL` | required; the API base URL, used as given |
+| `endpoint` | `MONITORING_URL` | older form: a site origin, `/api/v1/monitoring` is appended; ignored when `apiUrl` is set |
 | `token` | `MONITORING_TOKEN` | required |
-| `service` | `MONITORING_SERVICE` | required; must be a service slug registered in Nerdstack |
+| `service` | `MONITORING_SERVICE` | required; a service slug of the application |
 | `version` | `APP_VERSION`, then `npm_package_version` | — |
 | `commit` | `APP_COMMIT`, `GIT_COMMIT`, `SOURCE_COMMIT` (Coolify), `GITHUB_SHA`, `VERCEL_GIT_COMMIT_SHA` | — |
-| `environment` | `MONITORING_ENVIRONMENT`, then `NODE_ENV` | — |
+| `environment` | `MONITORING_ENVIRONMENT` | — (the token's environment) |
 | `enabled` | `MONITORING_ENABLED=false` turns everything into no-ops | `true` |
 | `heartbeatInterval` | — | the server's suggestion, else 30000 ms |
 | `requestTimeout` | — | 3000 ms |
@@ -65,13 +69,14 @@ With those set, `createMonitoring()` needs no arguments:
 | `logger`, `debug` | — | `console.warn`, off |
 | `fetch` | — | global `fetch` |
 
-`environment` accepts any common spelling (`prod`, `staging`, `dev`, …) and
-normalises it to `production`, `staging` or `development`, the only values
-the API accepts. Anything else, such as `test`, is simply not sent.
+Leave `environment` unset: the token already belongs to one environment and
+the server uses it. If you set it, it must name that environment, or the
+server refuses the report. `NODE_ENV` is deliberately not used, because
+staging servers often run with `NODE_ENV=production`.
 
 Configuration is validated once, when you call `createMonitoring`. A missing
 or malformed value throws a `MonitoringConfigError` that lists every problem.
-The token itself is never repeated in the error. The endpoint must be `https`
+The token itself is never repeated in the error. The API URL must be `https`
 (plain `http` is allowed only for `localhost`). After construction, the SDK
 never throws.
 
@@ -166,7 +171,7 @@ monitoring.captureMessage("Operation failed", "error");
 monitoring.captureMessage("Production is unavailable", "critical");
 ```
 
-| Level | API severity | API event type | Effect in Nerdstack |
+| Level | API severity | API event type | Effect on the server |
 | --- | --- | --- | --- |
 | `info` | `INFO` | `custom` | recorded |
 | `warning` | `WARNING` | `warning` | recorded |
@@ -291,7 +296,7 @@ listening for these events disables the default crash, so the SDK restores it:
   reports.
 
 Monitoring never keeps a crashed process running, and an unreachable
-Nerdstack delays the crash by at most `flushTimeout`. The function returns an
+The SDK delays the crash by at most `flushTimeout`. The function returns an
 uninstaller.
 
 ## Security and redaction
@@ -335,9 +340,9 @@ Monitoring is never more important than the application.
 
 | Situation | What the SDK does |
 | --- | --- |
-| Nerdstack slow | Each request is abandoned after `requestTimeout` (3s). |
+| API slow | Each request is abandoned after `requestTimeout` (3s). |
 | Network error, timeout, 408, 429, 5xx | Retries up to `maxRetries` (2) with exponential backoff and jitter, honouring `Retry-After`. Heartbeats retry at most once, since the next beat supersedes them. |
-| Nerdstack down | After 3 failed requests the SDK pauses (30s, doubling up to 5 min), making no requests until then. This prevents retry storms from every instance. |
+| API down | After 3 failed requests the SDK pauses (30s, doubling up to 5 min), making no requests until then. This prevents retry storms from every instance. |
 | Events while unreachable | Kept in memory up to `maxBufferedEvents` (100); the oldest are dropped first; delivered after recovery. |
 | 400 / 413 / 422 (e.g. unknown service) | Not retried. One warning per distinct cause. |
 | 401 (token revoked or wrong) | All reporting stops until restart, with one warning. |
