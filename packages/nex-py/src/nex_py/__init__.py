@@ -28,6 +28,7 @@ from typing import Any
 from . import checks
 from ._redact import REDACTED, redact, redact_string
 from ._scope import Scope
+from ._trace import Span, TraceContext, format_traceparent, parse_traceparent
 from .checks import DependencyCheck
 from .client import SDK_NAME, Monitoring, MonitoringConfigError, __version__, normalize_environment
 from .integrations import (
@@ -43,6 +44,8 @@ __all__ = [
     "REDACTED",
     "SDK_NAME",
     "DependencyCheck",
+    "Span",
+    "TraceContext",
     "Monitoring",
     "MonitoringASGIMiddleware",
     "MonitoringConfigError",
@@ -56,6 +59,14 @@ __all__ = [
     "capture_message",
     "checks",
     "flush",
+    "format_traceparent",
+    "gauge",
+    "increment",
+    "metric",
+    "parse_traceparent",
+    "start_span",
+    "trace",
+    "trace_headers",
     "get_client",
     "init",
     "install_asyncio_handler",
@@ -170,6 +181,39 @@ def job(name: str, **options: Any) -> Any:
 
         return _Plain()
     return _client.job(name, **options)
+
+
+def trace(name: str, **options: Any) -> Any:
+    """``with nex.trace("SELECT orders"):`` / ``@nex.trace("render")``; plain when not initialised."""
+    if _client is None:
+        import contextlib
+
+        class _Plain(contextlib.nullcontext[None]):
+            def __call__(self, fn: Any) -> Any:
+                return fn
+
+        return _Plain()
+    return _client.trace(name, **options)
+
+
+def start_span(name: str, **options: Any) -> Span | None:
+    return _client.start_span(name, **options) if _client else None
+
+
+def trace_headers() -> dict[str, str]:
+    return _client.trace_headers() if _client else {}
+
+
+def metric(name: str, value: float, **options: Any) -> bool:
+    return bool(_with("metric", name, value, **options))
+
+
+def increment(name: str, by: float = 1) -> bool:
+    return bool(_with("increment", name, by))
+
+
+def gauge(name: str, value: float, unit: str | None = None) -> bool:
+    return bool(_with("gauge", name, value, unit))
 
 
 def flush(timeout: float = 5.0) -> bool:

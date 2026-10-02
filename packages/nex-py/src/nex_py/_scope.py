@@ -25,12 +25,17 @@ class Scope:
         self.breadcrumbs: deque[dict[str, Any]] = deque(maxlen=MAX_BREADCRUMBS)
         self.request: dict[str, Any] | None = None
         self.transaction: str | None = None
+        # The span work in this scope belongs to (a nex_py._trace.Span).
+        self.span: Any = None
+        # perf_counter() when the request this scope serves began.
+        self.request_started: float | None = None
 
     def fork(self) -> Scope:
         scope = Scope()
         scope.user = dict(self.user) if self.user else None
         scope.tags = dict(self.tags)
         scope.breadcrumbs.extend(list(self.breadcrumbs)[-20:])
+        scope.span = self.span
         return scope
 
     def add_breadcrumb(self, crumb: dict[str, Any]) -> None:

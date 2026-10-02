@@ -7,8 +7,10 @@ reset when taken.
 from __future__ import annotations
 
 import contextlib
+import math
 import os
 import random
+import re
 import sys
 import threading
 import time
@@ -174,17 +176,33 @@ class RuntimeSampler:
 # --- Outgoing HTTP ------------------------------------------------------------------------------
 
 OnCall = Callable[[str, float, "int | None", bool], None]
+#: Tracing's part in an outgoing call: (method, url) → (traceparent, finish(status, failed)), or None.
+OnStart = Callable[[str, str], "tuple[str, Callable[[int | None, bool], None]] | None"]
 
 
-def install_http_observers(on_call: OnCall, skip_origin: str | None) -> Callable[[], None]:
-    """Times outgoing ``httpx`` and ``requests`` calls. The call itself is
-    unchanged: the response and any exception pass straight through."""
+def install_http_observers(on_call: OnCall, skip_origin: str | None, on_start: OnStart | None = None) -> Callable[[], None]:
+    """Times outgoing ``httpx`` and ``requests`` calls, and inside a trace adds
+    ``traceparent`` to them. Otherwise the call is unchanged: the response and
+    any exception pass straight through."""
     undo: list[Callable[[], None]] = []
+    finishers: dict[int, Callable[[int | None, bool], None]] = {}
 
-    def observe(url: str, started: float, status: int | None, failed: bool) -> None:
+    def begin(method: str, url: str, headers: Any) -> None:
+        if on_start is None or (skip_origin and url.startswith(skip_origin)):
+            return
+        with contextlib.suppress(Exception):
+            hooks = on_start(method.upper(), url.split("?", 1)[0].split("#", 1)[0])
+            if hooks is not None:
+                headers["traceparent"] = hooks[0]
+                finishers[id(headers)] = hooks[1]
+
+    def observe(url: str, started: float, status: int | None, failed: bool, headers: Any = None) -> None:
+        finish = finishers.pop(id(headers), None) if headers is not None else None
         if skip_origin and url.startswith(skip_origin):
             return
         with contextlib.suppress(Exception):
+            if finish is not None:
+                finish(status, failed or (status is not None and status >= 500))
             on_call(url, (time.perf_counter() - started) * 1000, status, failed)
 
     try:
@@ -195,22 +213,24 @@ def install_http_observers(on_call: OnCall, skip_origin: str | None) -> Callable
 
         def send(self: httpx.Client, request: httpx.Request, *args: Any, **kwargs: Any) -> httpx.Response:
             started = time.perf_counter()
+            begin(request.method, str(request.url), request.headers)
             try:
                 response = original_send(self, request, *args, **kwargs)
             except Exception:
-                observe(str(request.url), started, None, True)
+                observe(str(request.url), started, None, True, request.headers)
                 raise
-            observe(str(request.url), started, response.status_code, False)
+            observe(str(request.url), started, response.status_code, False, request.headers)
             return response
 
         async def async_send(self: httpx.AsyncClient, request: httpx.Request, *args: Any, **kwargs: Any) -> httpx.Response:
             started = time.perf_counter()
+            begin(request.method, str(request.url), request.headers)
             try:
                 response = await original_async_send(self, request, *args, **kwargs)
             except Exception:
-                observe(str(request.url), started, None, True)
+                observe(str(request.url), started, None, True, request.headers)
                 raise
-            observe(str(request.url), started, response.status_code, False)
+            observe(str(request.url), started, response.status_code, False, request.headers)
             return response
 
         httpx.Client.send = send  # type: ignore[method-assign]
@@ -231,12 +251,13 @@ def install_http_observers(on_call: OnCall, skip_origin: str | None) -> Callable
 
         def requests_send(self: Any, request: Any, **kwargs: Any) -> Any:
             started = time.perf_counter()
+            begin(str(request.method), str(request.url), request.headers)
             try:
                 response = original_requests_send(self, request, **kwargs)
             except Exception:
-                observe(str(request.url), started, None, True)
+                observe(str(request.url), started, None, True, request.headers)
                 raise
-            observe(str(request.url), started, response.status_code, False)
+            observe(str(request.url), started, response.status_code, False, request.headers)
             return response
 
         requests.Session.send = requests_send
@@ -253,3 +274,54 @@ def install_http_observers(on_call: OnCall, skip_origin: str | None) -> Callable
             fn()
 
     return uninstall
+
+
+class RequestRecorder:
+    """Incoming requests in the heartbeat window."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._durations = Durations()
+        self._since = time.monotonic()
+
+    def record(self, duration_ms: float, failed: bool) -> None:
+        with self._lock:
+            self._durations.add(duration_ms, failed)
+
+    def take(self) -> dict[str, Any]:
+        with self._lock:
+            d, self._durations = self._durations, Durations()
+            now = time.monotonic()
+            window = max(1, round(now - self._since))
+            self._since = now
+        return {"count": d.count, "errors": d.errors, "p50Ms": d.percentile(50), "p95Ms": d.percentile(95), "maxMs": round(d.max), "windowSeconds": window}
+
+
+_METRIC_NAME = re.compile(r"^[A-Za-z0-9_.:/-]{1,100}$")
+
+
+class MetricRecorder:
+    """Custom metrics between heartbeats: a gauge keeps its last value, a counter its sum."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._values: dict[str, dict[str, Any]] = {}
+
+    def record(self, name: str, value: float, kind: str, unit: str | None = None) -> bool:
+        if not _METRIC_NAME.match(name) or not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
+            return False
+        with self._lock:
+            existing = self._values.get(name)
+            if existing is None and len(self._values) >= 100:
+                return False
+            if existing is not None and existing["type"] == "counter" and kind == "counter":
+                existing["value"] += value
+            else:
+                self._values[name] = {"name": name, "type": kind, "value": value, **({"unit": truncate(unit, 20)} if unit else {})}
+        return True
+
+    def take(self) -> list[dict[str, Any]]:
+        with self._lock:
+            out = [dict(m) for m in self._values.values()]
+            self._values = {k: v for k, v in self._values.items() if v["type"] != "counter"}
+        return out

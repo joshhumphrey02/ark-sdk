@@ -26,6 +26,12 @@ with the same API contract and safety rules as `@nerdstackgrp/nex-js`.
   map; RSS, CPU and thread count with each heartbeat.
 - `job()` (context manager and decorator, sync and async) and
   `install_celery()`: scoped, counted and timed background work.
+- Distributed tracing: request, outgoing-call (`httpx`, `requests`) and job
+  spans, W3C `traceparent` in and out, `trace()`, `start_span()`,
+  `trace_headers()`, `traces_sample_rate` (default 0.1). Errors link to
+  their trace.
+- Heartbeats carry an incoming-request summary and custom metrics
+  (`metric()`, `increment()`, `gauge()`).
 - `report_release()`.
 - Background delivery that can't hurt the application: timeouts, bounded
   retries with backoff, a pause after repeated failures, a capped buffer,

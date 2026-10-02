@@ -160,6 +160,39 @@ heartbeat; only the scheme, host and port, never paths or query strings.
 Nex joins them with the other services' reports to draw which service calls
 which. Heartbeats also carry RSS, CPU and thread count.
 
+## Traces
+
+Each request through the ASGI/WSGI middleware is a span, continuing the
+caller's trace when it sent a W3C `traceparent`; every `httpx` or
+`requests` call made while handling it is a child span and carries
+`traceparent` on, so the next service (on nex-py, nex-js or OpenTelemetry)
+joins the same trace. Jobs are spans too. Nex shows each trace as a
+waterfall across services, with its errors.
+
+```python
+with nex.trace("SELECT orders", kind="client", attributes={"db.system": "postgresql"}):
+    rows = db.execute(query)
+
+@nex.trace("render invoice")
+def render(invoice): ...
+
+publish(message, headers=nex.trace_headers())   # propagate by hand
+```
+
+`traces_sample_rate` (default 0.1, env `NEX_TRACES_SAMPLE_RATE`) is the
+share of new traces kept; a trace started elsewhere keeps its decision.
+Spans are sent in batches every few seconds.
+
+## Metrics
+
+Heartbeats carry the requests handled since the last one (count, errors,
+p50, p95, max) and your own metrics, which Nex graphs and alert rules watch:
+
+```python
+nex.increment("orders.placed")            # counter: summed per heartbeat
+nex.gauge("queue.depth", depth, "jobs")   # gauge: the last value
+```
+
 ## Jobs and workers
 
 ```python

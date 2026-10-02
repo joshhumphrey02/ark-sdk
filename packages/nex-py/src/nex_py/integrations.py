@@ -199,7 +199,9 @@ class MonitoringASGIMiddleware:
                 status["code"] = int(message.get("status", 0))
             await send(message)
 
-        with self.monitoring.request_scope(method=method, path=str(scope.get("path", "/")), user_agent=headers.get("user-agent")) as request_scope:
+        with self.monitoring.request_scope(
+            method=method, path=str(scope.get("path", "/")), user_agent=headers.get("user-agent"), traceparent=headers.get("traceparent")
+        ) as request_scope:
             try:
                 await self.app(scope, receive, send_wrapper)
             except Exception as exc:
@@ -209,8 +211,10 @@ class MonitoringASGIMiddleware:
                 if request_scope.request is not None:
                     request_scope.request["status"] = 500
                 self.monitoring.capture_exception(exc, handled=False, mechanism="asgi")
+                self.monitoring.finish_request(request_scope, 500, route=route, failed=True)
                 raise
             code = status.get("code", 0)
+            self.monitoring.finish_request(request_scope, code, route=_route_of(scope))
             if code >= 500:
                 route = _route_of(scope) or str(scope.get("path", "/"))
                 self._server_errors.report(method, route, code)
@@ -242,12 +246,16 @@ class MonitoringWSGIMiddleware:
                 status["code"] = int(code.split(" ", 1)[0])
             return start_response(code, headers, exc_info) if exc_info is not None else start_response(code, headers)
 
-        with self.monitoring.request_scope(method=method, path=path, user_agent=environ.get("HTTP_USER_AGENT")):
+        with self.monitoring.request_scope(
+            method=method, path=path, user_agent=environ.get("HTTP_USER_AGENT"), traceparent=environ.get("HTTP_TRACEPARENT")
+        ) as request_scope:
             try:
                 result = self.app(environ, start_wrapper)
             except Exception as exc:
                 self.monitoring.capture_exception(exc, handled=False, mechanism="wsgi")
+                self.monitoring.finish_request(request_scope, 500, failed=True)
                 raise
+            self.monitoring.finish_request(request_scope, status.get("code", 0))
             if status.get("code", 0) >= 500:
                 self._server_errors.report(method, path, status["code"])
             return result

@@ -36,7 +36,8 @@ import httpx
 from ._redact import bound_json, redact, redact_bounded, strip_query, truncate
 from ._scope import Scope, current_scope, pop_scope, push_scope
 from ._stack import exception_chain, flat_error
-from ._stats import CallRecorder, JobRecorder, RuntimeSampler, install_http_observers
+from ._stats import CallRecorder, JobRecorder, MetricRecorder, RequestRecorder, RuntimeSampler, install_http_observers
+from ._trace import Span, parse_traceparent, sample
 from .checks import DependencyCheck, clean_target
 
 __version__ = "0.1.0"
@@ -60,6 +61,9 @@ ENVIRONMENTS = {
 }
 
 MAX_BATCH = 25
+MAX_SPAN_BATCH = 500
+MAX_BUFFERED_SPANS = 5_000
+SPAN_FLUSH_SECONDS = 5.0
 MAX_BATCH_BYTES = 900_000
 METADATA_BYTES = 8_000
 FAILURES_BEFORE_PAUSE = 3
@@ -173,6 +177,7 @@ class Monitoring:
         before_send: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
         checks: Mapping[str, Check] | None = None,
         check_timeout: float = 2.0,
+        traces_sample_rate: float | None = None,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         env = os.environ
@@ -199,8 +204,17 @@ class Monitoring:
                 problems.append("service is required (or NEX_SERVICE)")
             elif not SERVICE_PATTERN.match(self.service):
                 problems.append(f'service "{self.service}" is not a valid slug (lowercase letters, digits, - _ .)')
+        rate_raw = traces_sample_rate if traces_sample_rate is not None else _first(env.get("NEX_TRACES_SAMPLE_RATE"))
+        try:
+            rate = float(rate_raw) if rate_raw is not None else 0.1
+        except ValueError:
+            rate = -1.0
+        if self.enabled:
+            if not 0 <= rate <= 1:
+                problems.append("traces_sample_rate must be a number from 0 to 1")
             if problems:
                 raise MonitoringConfigError(problems)
+        self.traces_sample_rate = rate if 0 <= rate <= 1 else 0.1
 
         self._url = _api_url(url) if url else ""
         self._token = token or ""
@@ -216,6 +230,12 @@ class Monitoring:
         self._uninstall_observers: Callable[[], None] | None = None
         self._legacy_heartbeat = False
         self._last_detail = ""
+        self._requests = RequestRecorder()
+        self._serves_requests = False
+        self._metrics = MetricRecorder()
+        self._spans: deque[dict[str, Any]] = deque(maxlen=MAX_BUFFERED_SPANS)
+        self._span_lock = threading.Lock()
+        self._span_timer: threading.Timer | None = None
         self._queue: deque[dict[str, Any]] = deque(maxlen=max(1, max_buffer))
         self._lock = threading.Condition()
         self._sending = False
@@ -457,7 +477,10 @@ class Monitoring:
         )
         if transaction:
             payload["transaction"] = truncate(transaction, 300)
-        payload.update(_active_trace())
+        trace = _active_trace()
+        if not trace and scope.span is not None:
+            trace = {"traceId": scope.span.trace_id, "spanId": scope.span.span_id}
+        payload.update(trace)
         return payload
 
     def _duplicate(self, payload: dict[str, Any]) -> bool:
@@ -573,6 +596,7 @@ class Monitoring:
         """Waits (bounded) until everything queued is sent. True if it all went."""
         if not self.enabled:
             return True
+        self._send_spans()
         deadline = time.monotonic() + timeout
         self._ensure_worker()
         with self._lock:
@@ -637,6 +661,11 @@ class Monitoring:
             body["jobs"] = jobs
         if self._runtime:
             body["runtime"] = self._runtime.take()
+        if self._serves_requests:
+            body["requests"] = self._requests.take()
+        metrics = self._metrics.take()
+        if metrics:
+            body["metrics"] = metrics
         status_code = self._post("/heartbeat", _legacy(body) if self._legacy_heartbeat else body)
         if status_code == 422 and not self._legacy_heartbeat and self._last_detail.startswith("dependencies"):
             # A server from before dependency reports takes statuses only.
@@ -687,7 +716,7 @@ class Monitoring:
             with contextlib.suppress(Exception):
                 parsed = httpx.URL(self._url)
                 origin = f"{parsed.scheme}://{parsed.netloc.decode()}"
-            self._uninstall_observers = install_http_observers(self._calls.record, origin)
+            self._uninstall_observers = install_http_observers(self._calls.record, origin, self._outgoing_span)
 
         def loop() -> None:
             while not self._heartbeat_stop.is_set():
@@ -736,7 +765,12 @@ class Monitoring:
 
     # --- Requests (used by the integrations) -------------------------------------------
 
-    def request_scope(self, *, method: str, path: str, route: str | None = None, user_agent: str | None = None) -> contextlib.AbstractContextManager[Scope]:
+    def request_scope(
+        self, *, method: str, path: str, route: str | None = None, user_agent: str | None = None, traceparent: str | None = None
+    ) -> contextlib.AbstractContextManager[Scope]:
+        """A request's scope, with a server span continuing the caller's trace.
+        The middleware reports how it ended with ``finish_request``."""
+
         @contextlib.contextmanager
         def scoped() -> Iterator[Scope]:
             with self.new_scope() as scope:
@@ -746,9 +780,119 @@ class Monitoring:
                     **({"route": route} if route else {}),
                     **({"userAgent": truncate(user_agent, 500)} if user_agent else {}),
                 }
-                yield scope
+                self._serves_requests = True
+                span = self._new_span(f"{method.upper()} {route or strip_query(path)}", "server", None, parse_traceparent(traceparent))
+                span.set_attribute("http.method", method.upper()).set_attribute("http.route", route or strip_query(path))
+                scope.span = span
+                scope.request_started = time.perf_counter()
+                try:
+                    yield scope
+                finally:
+                    span.end()
 
         return scoped()
+
+    def finish_request(self, scope: Scope, status: int, *, route: str | None = None, failed: bool = False) -> None:
+        """How a request ended: its span's status and the request summary."""
+        with contextlib.suppress(Exception):
+            started = scope.request_started
+            duration = (time.perf_counter() - started) * 1000 if started is not None else 0.0
+            self._requests.record(duration, failed or status >= 500)
+            span = scope.span
+            if span is not None:
+                if route:
+                    span.name = f"{(scope.request or {}).get('method', 'GET')} {route}"
+                    span.set_attribute("http.route", route)
+                span.set_attribute("http.status_code", status)
+                if failed or status >= 500:
+                    span.set_status("error")
+
+    # --- Traces and metrics ---------------------------------------------------------------
+
+    def _new_span(self, name: str, kind: str, parent: Span | None, remote: Any = None) -> Span:
+        context = parent.context if parent is not None else remote
+        return Span(name, kind, context, self.enabled and sample(self.traces_sample_rate, context), self._queue_span)
+
+    def start_span(self, name: str, *, kind: str = "internal", attributes: Mapping[str, Any] | None = None) -> Span:
+        """A span under the current one (or a new trace). Call ``end()`` on it."""
+        span = self._new_span(name, kind, current_scope().span)
+        for key, value in (attributes or {}).items():
+            span.set_attribute(str(key), value)
+        return span
+
+    def trace(self, name: str, *, kind: str = "internal", attributes: Mapping[str, Any] | None = None) -> _Trace:
+        """A span of the current trace, as a context manager or a decorator::
+
+        with monitoring.trace("SELECT orders", kind="client", attributes={"db.system": "postgresql"}):
+            rows = db.execute(query)
+        """
+        return _Trace(self, name, kind, dict(attributes or {}))
+
+    def trace_headers(self) -> dict[str, str]:
+        """The current trace as headers, for propagating by hand (a queue message)."""
+        span = current_scope().span
+        return {"traceparent": span.traceparent} if span is not None else {}
+
+    def metric(self, name: str, value: float, *, type: str = "gauge", unit: str | None = None) -> bool:
+        """A custom metric for the next heartbeat: a ``gauge`` keeps its last
+        value, a ``counter`` adds up. Graph it and alert on it in Nex."""
+        if not self.enabled:
+            return False
+        return self._metrics.record(str(name), value, "counter" if type == "counter" else "gauge", unit)
+
+    def increment(self, name: str, by: float = 1) -> bool:
+        return self.metric(name, by, type="counter")
+
+    def gauge(self, name: str, value: float, unit: str | None = None) -> bool:
+        return self.metric(name, value, type="gauge", unit=unit)
+
+    def _outgoing_span(self, method: str, url: str) -> tuple[str, Callable[[int | None, bool], None]] | None:
+        parent = current_scope().span
+        if parent is None:
+            return None
+        span = self._new_span(f"{method} {url}", "client", parent)
+        span.set_attribute("http.method", method).set_attribute("http.url", url)
+
+        def finish(status: int | None, failed: bool) -> None:
+            if status is not None:
+                span.set_attribute("http.status_code", status)
+            if failed:
+                span.set_status("error")
+            span.end()
+
+        return span.traceparent, finish
+
+    def _queue_span(self, payload: dict[str, Any]) -> None:
+        if not self.enabled or self._token_rejected or self._closed:
+            return
+        payload["service"] = self.service
+        with self._span_lock:
+            self._spans.append(payload)
+            due = len(self._spans) >= MAX_SPAN_BATCH
+            if not due and self._span_timer is None:
+                self._span_timer = threading.Timer(SPAN_FLUSH_SECONDS, self._send_spans)
+                self._span_timer.daemon = True
+                self._span_timer.start()
+        if due:
+            threading.Thread(target=self._send_spans, name="nex-spans", daemon=True).start()
+
+    def _send_spans(self) -> None:
+        with self._span_lock:
+            if self._span_timer is not None:
+                self._span_timer.cancel()
+                self._span_timer = None
+        while not self._token_rejected:
+            with self._span_lock:
+                batch = [self._spans.popleft() for _ in range(min(MAX_SPAN_BATCH, len(self._spans)))]
+            if not batch:
+                return
+            status = self._post("/spans", {"spans": batch})
+            if status is None or (status >= 500 and status != 503):
+                with self._span_lock:
+                    self._spans.extendleft(reversed(batch))
+                return
+            if status >= 300:
+                return  # An older server without /spans, or a full quota: dropped.
 
 
 def _timed(check: Callable[[], Any]) -> tuple[Any, float]:
@@ -759,7 +903,7 @@ def _timed(check: Callable[[], Any]) -> tuple[Any, float]:
 
 def _legacy(body: dict[str, Any]) -> dict[str, Any]:
     """The heartbeat as servers before 2026-10 accept it: dependency statuses only."""
-    out = {k: v for k, v in body.items() if k not in ("calls", "jobs", "runtime")}
+    out = {k: v for k, v in body.items() if k not in ("calls", "jobs", "runtime", "requests", "metrics")}
     if "dependencies" in out:
         out["dependencies"] = {name: d["status"] for name, d in out["dependencies"].items()}
     return out
@@ -778,6 +922,8 @@ class _Job:
         scope_cm = self._monitoring.new_scope()
         scope = scope_cm.__enter__()
         scope.set_transaction(self._name)
+        scope.span = self._monitoring._new_span(self._name, "consumer", scope.span)
+        scope.span.set_attribute("job.name", self._name)
         for key, value in self._tags.items():
             scope.set_tag(key, value)
         self._stack.append((scope_cm, time.perf_counter()))
@@ -786,6 +932,11 @@ class _Job:
     def __exit__(self, kind: type[BaseException] | None, exc: BaseException | None, tb: Any) -> None:
         scope_cm, started = self._stack.pop()
         failed = exc is not None and not isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit))
+        span = current_scope().span
+        if span is not None:
+            if failed:
+                span.set_status("error")
+            span.end()
         try:
             self._monitoring._record_job(self._name, (time.perf_counter() - started) * 1000, failed)
             if failed and exc is not None:
@@ -806,6 +957,49 @@ class _Job:
         @functools.wraps(fn)
         def run(*args: Any, **kwargs: Any) -> Any:
             with _Job(self._monitoring, self._name, self._tags):
+                return fn(*args, **kwargs)
+
+        return cast(F, run)
+
+
+class _Trace:
+    """``Monitoring.trace()``: a span as a context manager, and a decorator for sync and async functions."""
+
+    def __init__(self, monitoring: Monitoring, name: str, kind: str, attributes: dict[str, Any]) -> None:
+        self._monitoring = monitoring
+        self._name = name
+        self._kind = kind
+        self._attributes = attributes
+        self._stack: list[tuple[contextlib.AbstractContextManager[Scope], Span]] = []
+
+    def __enter__(self) -> Span:
+        scope_cm = self._monitoring.new_scope()
+        scope = scope_cm.__enter__()
+        span = self._monitoring.start_span(self._name, kind=self._kind, attributes=self._attributes)
+        scope.span = span
+        self._stack.append((scope_cm, span))
+        return span
+
+    def __exit__(self, kind: type[BaseException] | None, exc: BaseException | None, tb: Any) -> None:
+        scope_cm, span = self._stack.pop()
+        if exc is not None:
+            span.set_status("error")
+        span.end()
+        scope_cm.__exit__(kind, exc, tb)
+
+    def __call__(self, fn: F) -> F:
+        if inspect.iscoroutinefunction(fn):
+
+            @functools.wraps(fn)
+            async def run_async(*args: Any, **kwargs: Any) -> Any:
+                with _Trace(self._monitoring, self._name, self._kind, self._attributes):
+                    return await cast(Callable[..., Awaitable[Any]], fn)(*args, **kwargs)
+
+            return cast(F, run_async)
+
+        @functools.wraps(fn)
+        def run(*args: Any, **kwargs: Any) -> Any:
+            with _Trace(self._monitoring, self._name, self._kind, self._attributes):
                 return fn(*args, **kwargs)
 
         return cast(F, run)
