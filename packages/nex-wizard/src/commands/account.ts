@@ -11,7 +11,7 @@ export async function login(runtime: Runtime): Promise<number> {
     ui.outro(`Already signed in as ${existing.user.email}.`);
     return 0;
   }
-  const session = await signIn(api, ui, { open: runtime.openBrowser });
+  const session = await signIn(api, ui, { open: runtime.openBrowser, printOnly: runtime.flags.noBrowser });
   ui.outro(`Signed in as ${session.user.email}.`);
   return 0;
 }

@@ -33,6 +33,7 @@ ${b("Options")}
       --environment <slug> Project environment (default: production)
       --cwd <dir>          The app's directory (default: here)
       --api-url <url>      Another Nex server (default: Nex cloud)
+      --no-browser         Print the sign-in link instead of opening a browser
       --debug              Show details of unexpected errors
   -h, --help               Show this help
   -v, --version            Show the version

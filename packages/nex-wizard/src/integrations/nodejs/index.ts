@@ -101,7 +101,7 @@ export const nodejs: Integration = {
     if (!entry) {
       manual.push(`Couldn't find your app's entry file. Start Nex at the very top of it:\n${initBlock(true, context.typescript, setup.service)}`);
     } else {
-      prependOnce(context, entry, "init", initBlock(isEsm(context, entry), entry.endsWith("ts"), setup.service));
+      prependOnce(context, entry, "init", initBlock(isEsm(context, entry), entry.endsWith("ts"), setup.service), { afterEnv: true });
       if (hasDep(context, "express")) context.files.write(entry, wireExpress(context.files.read(entry)!, manual, entry));
       else {
         const framework = SERVER_FRAMEWORKS.find(([dep]) => hasDep(context, dep));

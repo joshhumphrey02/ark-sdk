@@ -14,6 +14,8 @@ export type Flags = {
   debug: boolean;
   help: boolean;
   version: boolean;
+  /** Print the sign-in URL instead of opening a browser (SSH, containers). */
+  noBrowser: boolean;
   cwd: string;
   apiUrl: string | null;
   org: string | null;
@@ -34,6 +36,7 @@ export function parseFlags(argv: string[], cwd = process.cwd()): Flags {
         debug: { type: "boolean" },
         help: { type: "boolean", short: "h" },
         version: { type: "boolean", short: "v" },
+        "no-browser": { type: "boolean" },
         cwd: { type: "string" },
         "api-url": { type: "string" },
         org: { type: "string" },
@@ -58,6 +61,7 @@ export function parseFlags(argv: string[], cwd = process.cwd()): Flags {
     debug: values.debug ?? false,
     help: values.help ?? false,
     version: values.version ?? false,
+    noBrowser: values["no-browser"] ?? false,
     cwd: values.cwd ?? cwd,
     apiUrl: values["api-url"] ?? null,
     org: values.org ?? null,

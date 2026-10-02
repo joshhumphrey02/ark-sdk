@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { JS } from "../sdks";
 import type { ProjectContext } from "../core/project";
-import { appendBlock, block, gitignoreCovers, hasBlock, prependBlock, syntaxFor } from "../core/text";
+import { appendBlock, block, gitignoreCovers, hasBlock, insertAt, prependBlock, statementEndLine, syntaxFor } from "../core/text";
 import { minVersion } from "../core/semver";
 import type { SetupValues } from "./types";
 
@@ -25,13 +25,33 @@ export function scriptExt(context: ProjectContext, jsx = false): string {
   return context.typescript ? (jsx ? "tsx" : "ts") : jsx ? "jsx" : "js";
 }
 
-/** Adds a block at the top of a file (after directives), once. Returns false if the file is missing. */
-export function prependOnce(context: ProjectContext, path: string, id: string, body: string): boolean {
+/** Top-level statements that load .env: SDK init must run after them, or it starts without its token. */
+const ENV_LOADERS = {
+  python: /^(?:dotenv\.)?load_dotenv\(/m,
+  js: /^(?:require\(\s*["']dotenv["']\s*\)\.config\(|require\(\s*["']dotenv\/config["']\s*\)|dotenv\.config\(|(?:dotenv\.)?config\(\s*\)\s*;?\s*$)/m,
+};
+
+/** The line after the last top-level .env loading statement, or null. */
+export function afterEnvLoad(content: string, language: "js" | "python"): number | null {
+  const pattern = new RegExp(ENV_LOADERS[language].source, "gm");
+  let last: number | null = null;
+  for (const match of content.matchAll(pattern)) last = statementEndLine(content, match.index!, language);
+  return last === null ? null : last + 1;
+}
+
+/**
+ * Adds a block at the top of a file (after directives), once; for SDK init
+ * (`afterEnv`), after the file's own .env loading if it has any. Returns
+ * false if the file is missing.
+ */
+export function prependOnce(context: ProjectContext, path: string, id: string, body: string, options: { afterEnv?: boolean } = {}): boolean {
   const content = context.files.read(path);
   if (content === null) return false;
   if (hasBlock(content, id)) return true;
   const language = path.endsWith(".py") ? "python" : "js";
-  context.files.write(path, prependBlock(content, block(id, body, syntaxFor(path)), language));
+  const text = block(id, body, syntaxFor(path));
+  const line = options.afterEnv ? afterEnvLoad(content, language) : null;
+  context.files.write(path, line === null ? prependBlock(content, text, language) : insertAt(content, line, text));
   return true;
 }
 

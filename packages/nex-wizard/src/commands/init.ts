@@ -51,13 +51,12 @@ async function obtainCredentials(runtime: Runtime, context: ProjectContext, inte
     ui.info(`Using ${[envToken && "NEX_TOKEN", envKey && "NEX_BROWSER_KEY"].filter(Boolean).join(" and ")} from the environment. Nothing secret is written to files.`);
     return { setup: { ...base, serverToken: needs.server ? envToken : null, browserKey: needs.browser ? envKey : null, environment: process.env.NEX_ENVIRONMENT?.trim() || null }, project: null, ci: true };
   }
-  if (!ui.interactive) throw new WizardError("Signing in needs an interactive terminal.", "In CI, set NEX_TOKEN (and NEX_BROWSER_KEY for web apps) and pass --yes.");
-
   const api = new NexApi(apiUrl, runtime.fetch);
   ui.step("Connecting to Nex");
   let session = await resumeSession(api);
   if (session) ui.success(`Signed in as ${session.user.email}`);
-  else session = await signIn(api, ui, { open: runtime.openBrowser });
+  else if (!ui.interactive) throw new WizardError("Signing in needs an interactive terminal.", "Run `npx @nerdstackgrp/nex-wizard login` first, or in CI set NEX_TOKEN (and NEX_BROWSER_KEY for web apps) and pass --yes.");
+  else session = await signIn(api, ui, { open: runtime.openBrowser, printOnly: runtime.flags.noBrowser });
   const project = await chooseProject(session.api, ui, {
     yes: flags.yes,
     dryRun: flags.dryRun,
@@ -135,7 +134,12 @@ function summarizeDryRun(runtime: Runtime, context: ProjectContext, install: Ret
     project ? `${color.bold("Would connect to")}\n  ${project.pending ? "new project " : ""}${project.application.name} (${project.organization.name} · ${project.environment.name})` : null,
   ].filter(Boolean);
   runtime.ui.note(lines.join("\n\n"), "Dry run");
-  for (const change of changes) runtime.ui.note(colorDiff(diff(change.before ?? "", change.after)), change.path);
+  for (const change of changes) {
+    // Env files hold secrets: listed by key above, never shown.
+    if (change.path === result.envFile || /(^|\/)\.env[^/]*$/.test(change.path)) continue;
+    const text = change.before === null ? change.after.replace(/\n$/, "").split("\n").map((line) => `+ ${line}`).join("\n") : diff(change.before, change.after);
+    runtime.ui.note(colorDiff(text), change.path);
+  }
 }
 
 export async function init(runtime: Runtime): Promise<number> {

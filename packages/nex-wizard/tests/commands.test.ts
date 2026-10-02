@@ -158,6 +158,12 @@ describe("dry run", () => {
     expect(plan).toContain("NEX_TOKEN");
     expect(ui.log.at(-1)).toContain("No changes were made.");
   });
+
+  test("never prints what's in an env file", async () => {
+    const root = nextApp({ ".env.local": "STRIPE_SECRET_KEY=sk_live_do_not_print\n" });
+    const { ui } = await runInit(root, { argv: ["--dry-run"] });
+    expect(ui.log.join("\n")).not.toContain("sk_live_do_not_print");
+  });
 });
 
 describe("uninstall", () => {

@@ -100,7 +100,7 @@ export async function resumeSession(api: NexApi): Promise<Session | null> {
   }
 }
 
-export type SignInOptions = { open?: (url: string) => void; timeoutMs?: number };
+export type SignInOptions = { open?: (url: string) => void; timeoutMs?: number; printOnly?: boolean };
 
 /** Browser sign-in: the password is typed on the Nex site, never here. */
 export async function signIn(api: NexApi, ui: UI, options: SignInOptions = {}): Promise<Session> {
@@ -110,8 +110,12 @@ export async function signIn(api: NexApi, ui: UI, options: SignInOptions = {}): 
   const pkce = createPkce();
   const listener = await listenForCode(pkce.state, options.timeoutMs ?? 5 * 60_000);
   const url = authorizeUrl(webUrl, listener.redirectUri, pkce);
-  ui.info(`Opening Nex in your browser to sign in.\n  If it doesn't open, go to:\n  ${url}`);
-  (options.open ?? openBrowser)(url);
+  if (options.printOnly) ui.info("Open this link to sign in to Nex:");
+  else {
+    ui.info("Opening Nex in your browser to sign in. If it doesn't open, use this link:");
+    (options.open ?? openBrowser)(url);
+  }
+  ui.link(url);
   const spinner = ui.spinner("Waiting for you to sign in");
   let code: string;
   try {

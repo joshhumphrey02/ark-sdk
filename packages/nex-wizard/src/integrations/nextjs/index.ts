@@ -2,7 +2,7 @@ import type { ProjectContext } from "../../core/project";
 import { compare } from "../../core/semver";
 import { block, hasBlock, insertAfterLine, appendBlock } from "../../core/text";
 import { SDKS } from "../../sdks";
-import { CLIENT, NO_SOURCE_MAPS, SERVER, depVersion, ensureIgnored, hasDep, scriptExt, serverEnv, writeBlockFile, apiUrlOption } from "../shared";
+import { CLIENT, NO_SOURCE_MAPS, SERVER, depVersion, ensureIgnored, hasDep, scriptExt, serverEnv, writeBlockFile } from "../shared";
 import type { ConfigureResult, Integration, SetupValues } from "../types";
 
 /** Where Next.js looks for instrumentation files: next to app/ (or pages/), inside src/ when that is used. */
@@ -18,27 +18,27 @@ function existing(context: ProjectContext, base: string): string | null {
   return context.files.first(...["ts", "js", "mjs", "tsx", "jsx"].map((ext) => `${base}.${ext}`));
 }
 
-const initServer = (ts: boolean) => `try {
-  nex.init({ service: process.env.NEX_SERVICE ?? "web" });
+const initServer = (ts: boolean, service: string) => `try {
+  nex.init({ service: process.env.NEX_SERVICE ?? "${service}" });
 } catch (error) {
   // Misconfigured monitoring must never stop the app from starting.
   console.warn("[nex] not started:", ${ts ? "(error as Error)" : "error"}.message);
 }`;
 
-function registerFunction(ts: boolean): string {
+function registerFunction(ts: boolean, service: string): string {
   return `export async function register() {
   if (process.env.NEXT_RUNTIME === "nodejs") {
     const nex = await import("${SERVER}");
-${initServer(ts).replace(/^/gm, "    ")}
+${initServer(ts, service).replace(/^/gm, "    ")}
   }
 }`;
 }
 
 /** For a register() that exists already (maybe not async): the same, without await. */
-function registerBody(ts: boolean): string {
+function registerBody(ts: boolean, service: string): string {
   return `if (process.env.NEXT_RUNTIME === "nodejs") {
   void import("${SERVER}").then((nex) => {
-${initServer(ts).replace(/^/gm, "    ")}
+${initServer(ts, service).replace(/^/gm, "    ")}
   });
 }`;
 }
@@ -65,7 +65,7 @@ function clientInit(setup: SetupValues): string {
 if (process.env.NEXT_PUBLIC_NEX_KEY) {
   nex.init({
     key: process.env.NEXT_PUBLIC_NEX_KEY,
-    release: process.env.NEXT_PUBLIC_APP_VERSION ?? process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA${apiUrlOption(setup, "process.env.NEXT_PUBLIC_NEX_API_URL")},
+    release: process.env.NEXT_PUBLIC_APP_VERSION ?? process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA,${setup.defaultApiUrl ? "" : "\n    apiUrl: process.env.NEXT_PUBLIC_NEX_API_URL,"}
   });
 }`;
 }
@@ -94,10 +94,10 @@ export default function GlobalError({ error, reset }${props}) {
 }
 
 /** Adds Nex to instrumentation.(ts|js): a new file, or the smallest edit to the developer's. */
-function configureInstrumentation(context: ProjectContext, path: string, ts: boolean, manual: string[]): void {
+function configureInstrumentation(context: ProjectContext, path: string, ts: boolean, service: string, manual: string[]): void {
   const content = context.files.read(path);
   if (content === null) {
-    context.files.write(path, `${block("server", `${registerFunction(ts)}\n\n${onRequestError(ts)}`, "slash")}\n`);
+    context.files.write(path, `${block("server", `${registerFunction(ts, service)}\n\n${onRequestError(ts)}`, "slash")}\n`);
     return;
   }
   if (hasBlock(content)) return;
@@ -105,11 +105,11 @@ function configureInstrumentation(context: ProjectContext, path: string, ts: boo
   const register = /^export\s+(async\s+)?function\s+register\s*\([^)]*\)[^{]*\{\s*$/m.exec(next);
   if (register) {
     const line = next.slice(0, register.index).split("\n").length - 1;
-    next = insertAfterLine(next, line, block("register", registerBody(ts), "slash", "  "));
+    next = insertAfterLine(next, line, block("register", registerBody(ts, service), "slash", "  "));
   } else if (/\bregister\b/.test(next)) {
     manual.push(`Start Nex from your register() in ${path}:\n  const nex = await import("${SERVER}"); nex.init();`);
   } else {
-    next = appendBlock(next, block("register", registerFunction(ts), "slash"));
+    next = appendBlock(next, block("register", registerFunction(ts, service), "slash"));
   }
   if (/\bonRequestError\b/.test(next)) manual.push(`Report server errors from your onRequestError in ${path}:\n  (await import("${SERVER}")).captureRequestError(...args);`);
   else next = appendBlock(next, block("on-request-error", onRequestError(ts), "slash"));
@@ -142,7 +142,7 @@ export const nextjs: Integration = {
     const { src, appDir } = layout(context);
     const manual: string[] = [];
 
-    configureInstrumentation(context, existing(context, `${src}instrumentation`) ?? `${src}instrumentation.${ext}`, ts, manual);
+    configureInstrumentation(context, existing(context, `${src}instrumentation`) ?? `${src}instrumentation.${ext}`, ts, setup.service, manual);
 
     // instrumentation-client runs in the browser before the app (Next.js 15.3+).
     const version = depVersion(context, "next");

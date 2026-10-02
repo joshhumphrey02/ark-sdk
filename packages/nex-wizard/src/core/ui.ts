@@ -18,6 +18,8 @@ export interface UI {
   warn(message: string): void;
   error(message: string): void;
   note(body: string, title?: string): void;
+  /** A URL on a line of its own, never wrapped, so it can be copied or clicked. */
+  link(url: string): void;
   spinner(message: string): Spinner;
   select<T>(message: string, choices: Choice<T>[], initial?: T): Promise<T>;
   search<T>(message: string, choices: Choice<T>[]): Promise<T>;
@@ -43,7 +45,13 @@ export function terminalUI(options: { interactive: boolean; debug?: boolean }): 
     warn: (message) => clack.log.warn(message),
     error: (message) => clack.log.error(message),
     note: (body, title) => clack.note(body, title),
+    link: (url) => process.stdout.write(`${pc.gray("│")}\n${pc.cyan(url)}\n`),
     spinner(message) {
+      // Logs and CI get plain lines; an animation there is a wall of frames.
+      if (!process.stdout.isTTY) {
+        clack.log.step(message);
+        return { stop: (m) => clack.log.success(m), fail: (m) => clack.log.error(m), message: () => undefined };
+      }
       const s = clack.spinner();
       s.start(message);
       return { stop: (m) => s.stop(m), fail: (m) => s.error(m), message: (m) => s.message(m) };

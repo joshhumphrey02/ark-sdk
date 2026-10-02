@@ -182,6 +182,14 @@ describe("Node.js", () => {
     expect(result.manual.join("\n")).toContain("--env-file");
   });
 
+  test("Node: init after require('dotenv').config()", () => {
+    const server = "require('dotenv').config();\nconst express = require('express');\nconst app = express();\napp.listen(3000);\n";
+    const { context } = configure("nodejs", fixture({ "package.json": { main: "index.js", dependencies: { express: "4", dotenv: "16" } }, "index.js": server }));
+    const after = staged(context, "index.js");
+    expect(after.indexOf("nex.init(")).toBeGreaterThan(after.indexOf("require('dotenv').config();"));
+    expect(removeBlocks(after)).toBe(server);
+  });
+
   test("CommonJS gets require()", () => {
     const { context } = configure("nodejs", fixture({ "package.json": { main: "server.js", dependencies: { fastify: "5.0.0" } }, "server.js": "const fastify = require('fastify')();\n" }));
     expect(staged(context, "server.js")).toContain('const nex = require("@nerdstackgrp/nex-js/server");');
@@ -199,6 +207,14 @@ describe("Python", () => {
     expect(removeBlocks(after)).toBe(main);
     expect(staged(context, "requirements.txt")).toContain("nex-python>=0.1.0");
     expect(result.env.NEX_SERVICE).toBe("my-store");
+  });
+
+  test("init runs after the app loads its .env, or it would start without a token", () => {
+    const main = '"""API."""\nfrom dotenv import load_dotenv\n\nload_dotenv()\n\nfrom fastapi import FastAPI\n\napp = FastAPI()\n';
+    const { context } = configure("python", fixture({ "requirements.txt": "fastapi\npython-dotenv\n", "main.py": main }));
+    const after = staged(context, "main.py");
+    expect(after.indexOf("nex.init(")).toBeGreaterThan(after.indexOf("load_dotenv()\n"));
+    expect(removeBlocks(after)).toBe(main);
   });
 
   test("Flask app factory: indented to match", () => {

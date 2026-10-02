@@ -98,7 +98,7 @@ export class NexApi {
   }
 
   index(): Promise<ApiIndex> {
-    return this.request("GET", "/");
+    return this.request("GET", "");
   }
 
   async health(): Promise<boolean> {

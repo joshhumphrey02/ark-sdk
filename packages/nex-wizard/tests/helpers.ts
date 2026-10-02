@@ -69,6 +69,7 @@ export function scriptedUI(answers: Record<string, Answer> = {}, interactive = t
     warn: (m) => log.push(`⚠ ${m}`),
     error: (m) => log.push(`✖ ${m}`),
     note: (body, title) => log.push(`[${title ?? ""}] ${body}`),
+    link: (url) => log.push(`🔗 ${url}`),
     spinner,
     select: async <T,>(message: string, choices: Choice<T>[]) => answer(message, choices as Choice<unknown>[]) as T,
     search: async <T,>(message: string, choices: Choice<T>[]) => answer(message, choices as Choice<unknown>[]) as T,

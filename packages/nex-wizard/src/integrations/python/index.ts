@@ -141,7 +141,7 @@ export const python: Integration = {
       const app = findApp(context, ctor);
       if (!app) manual.push(`Couldn't find where your ${framework === "fastapi" ? "FastAPI" : "Flask"} app is created. At the top of that module add:\n${initCode(setup.service)}`);
       else {
-        prependOnce(context, app.path, "init", initCode(setup.service));
+        prependOnce(context, app.path, "init", initCode(setup.service), { afterEnv: true });
         const wire =
           framework === "fastapi"
             ? `if nex.get_client() is not None:\n    ${app.name}.add_middleware(nex.MonitoringASGIMiddleware, monitoring=nex.get_client())`
@@ -152,7 +152,7 @@ export const python: Integration = {
     } else {
       const entry = context.files.first("main.py", "app.py", "__main__.py", "run.py") ?? pythonFiles(context).find((file) => /__name__\s*==\s*["']__main__["']/.test(context.files.read(file) ?? ""));
       if (!entry) manual.push(`Couldn't find your program's entry module. At the top of it add:\n${initCode(setup.service)}`);
-      else prependOnce(context, entry, "init", initCode(setup.service));
+      else prependOnce(context, entry, "init", initCode(setup.service), { afterEnv: true });
     }
 
     if (/(^|\W)celery\b/m.test(context.python?.dependencies ?? "")) manual.push("Celery: call nex.install_celery(nex.get_client()) where your worker starts, to report task failures.");
