@@ -7,6 +7,8 @@ jobs, and releases. The Python counterpart of
 [`@nerdstackgrp/nex-js`](../nex-js), with the same API and the same rules.
 
 ```sh
+npx @nerdstackgrp/nex-wizard@latest -i python   # installs and sets it up (FastAPI, Flask, Django)
+# or by hand:
 pip install nex-python
 ```
 
