@@ -104,6 +104,13 @@ await monitoring.reportRelease({ version: "2.4.1", commit: "a82f91c" });
 
 See [`packages/monitoring/README.md`](packages/monitoring/README.md).
 
+### `nerdstack-monitoring` for Python
+
+The same reporting for Python services (FastAPI, Starlette, Django, Flask,
+Celery, scripts): errors with frames, breadcrumbs from logging, users and
+requests, crash reports, heartbeats and releases. See
+[`packages/monitoring-py/README.md`](packages/monitoring-py/README.md).
+
 ### `nerdstack-ark` for Python
 
 The [`packages/ark-py/`](packages/ark-py) package provides synchronous and asynchronous Ark
