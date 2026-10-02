@@ -1,0 +1,39 @@
+{
+  "name": "@nerdstackgrp/nex-wizard",
+  "version": "0.1.0",
+  "description": "Connect an application to Nex with one command: detects the framework, signs you in, picks the project, installs and configures the right Nex SDK, and sends a test event.",
+  "license": "MIT",
+  "author": "Nerdstack",
+  "homepage": "https://github.com/joshhumphrey02/ark-sdk/tree/master/packages/nex-wizard#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joshhumphrey02/ark-sdk.git",
+    "directory": "packages/nex-wizard"
+  },
+  "bugs": {
+    "url": "https://github.com/joshhumphrey02/ark-sdk/issues"
+  },
+  "type": "module",
+  "bin": {
+    "nex-wizard": "./dist/bin.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": ["nex", "monitoring", "observability", "wizard", "cli", "nextjs", "react", "vue", "angular", "svelte", "astro", "python"],
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit -p .",
+    "test": "bun test tests"
+  },
+  "dependencies": {
+    "@clack/prompts": "^1.8.1",
+    "picocolors": "^1.1.1"
+  }
+}
