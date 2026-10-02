@@ -3,9 +3,19 @@
 Nerdstack SDKs. For Ark storage: `@nerdstackgrp/ark-client` for direct browser
 uploads, `@nerdstackgrp/ark-server` for TypeScript backends, and `nerdstack-ark`
 for Python frameworks and workers. For monitoring with Nex:
-`@nerdstackgrp/nex-js` (servers and browsers) and `nex-py` (Python).
+`@nerdstackgrp/nex-js` (servers and browsers), `nex-python` (Python), and
+`@nerdstackgrp/nex-wizard`, which sets either up in one command.
 
 ## Install
+
+To connect an app to Nex, run the wizard from its folder. It picks and
+configures the right SDK:
+
+```bash
+npx @nerdstackgrp/nex-wizard@latest
+```
+
+By hand:
 
 ```bash
 npm install @nerdstackgrp/ark-client   # browser

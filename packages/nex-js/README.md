@@ -41,6 +41,9 @@ nex.init({ key: process.env.NEXT_PUBLIC_NEX_KEY, release: process.env.NEXT_PUBLI
 
 ## Install
 
+The quickest way: run `npx @nerdstackgrp/nex-wizard@latest` in your app's folder. It
+installs this SDK, configures your framework and sends a test event. By hand:
+
 ```bash
 npm install @nerdstackgrp/nex-js
 # or: bun add @nerdstackgrp/nex-js
