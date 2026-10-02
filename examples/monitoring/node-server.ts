@@ -1,9 +1,9 @@
 /**
- * A Node (or Bun) API reporting to Nerdstack Monitoring.
+ * A Node (or Bun) API reporting to Nex.
  *
- *   MONITORING_URL=https://nerdstackgrp.com \
- *   MONITORING_TOKEN=nsk_live_… \
- *   MONITORING_SERVICE=ark-api \
+ *   NEX_API_URL=https://nerdstackgrp.com/api/v1/monitoring \
+ *   NEX_TOKEN=nsk_live_… \
+ *   NEX_SERVICE=ark-api \
  *   APP_VERSION=2.4.1 \
  *   node --experimental-strip-types node-server.ts
  *
@@ -11,9 +11,9 @@
  */
 
 import http from "node:http";
-import { createMonitoring } from "@nerdstackgrp/monitoring";
+import { createMonitoring } from "@nerdstackgrp/nex-js/server";
 
-// Everything else comes from MONITORING_* and APP_VERSION.
+// Everything else comes from NEX_* and APP_VERSION.
 const monitoring = createMonitoring({
   checks: {
     // Replace with real probes: db.query("SELECT 1"), redis.ping(), …

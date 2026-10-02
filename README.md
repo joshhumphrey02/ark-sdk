@@ -2,15 +2,16 @@
 
 Nerdstack SDKs. For Ark storage: `@nerdstackgrp/ark-client` for direct browser
 uploads, `@nerdstackgrp/ark-server` for TypeScript backends, and `nerdstack-ark`
-for Python frameworks and workers. For operations: `@nerdstackgrp/monitoring`
-reports health, errors and deployments to Nerdstack Monitoring.
+for Python frameworks and workers. For monitoring with Nex:
+`@nerdstackgrp/nex-js` (servers and browsers) and `nex-py` (Python).
 
 ## Install
 
 ```bash
 npm install @nerdstackgrp/ark-client   # browser
 npm install @nerdstackgrp/ark-server   # backend
-npm install @nerdstackgrp/monitoring   # service monitoring (Node/Bun)
+npm install @nerdstackgrp/nex-js       # Nex monitoring (Node, Bun, browsers)
+pip install nex-py                     # Nex monitoring (Python)
 ```
 
 Both ship ESM and CommonJS builds with TypeScript declarations, and have zero
@@ -82,34 +83,32 @@ streams; the declared size must match the bytes produced.
 
 The S3 endpoint also works with the official AWS SDK, AWS CLI, and rclone.
 
-### `@nerdstackgrp/monitoring`
+### `@nerdstackgrp/nex-js`
 
-Heartbeats, error reporting, releases and opt-in HTTP instrumentation for any
-Node or Bun service owned or managed by Nerdstack. If Nerdstack is
-unreachable, the application is unaffected.
+Nex for JavaScript. On servers (`@nerdstackgrp/nex-js/server`, Node and
+Bun): errors and crashes with frames, breadcrumbs, users and requests;
+heartbeats with the health of Postgres, MySQL, Redis, MongoDB, RabbitMQ and
+any HTTP or TCP dependency; outgoing calls for the service map; process
+vitals; background jobs; releases; Next.js `onRequestError`. In browsers
+(`@nerdstackgrp/nex-js/client`): crashes with the page, browser, user and
+the clicks, navigations and requests that led to them, plus a React error
+boundary (`@nerdstackgrp/nex-js/react`). If Nex is unreachable, the
+application is unaffected.
 
 ```ts
-import { createMonitoring } from "@nerdstackgrp/monitoring";
+import * as nex from "@nerdstackgrp/nex-js/server";
 
-const monitoring = createMonitoring({
-  endpoint: process.env.MONITORING_URL!,  // https://nerdstackgrp.com
-  token: process.env.MONITORING_TOKEN!,   // nsk_live_…, from Monitoring → Applications
-  service: "ark-api",
-});
-monitoring.start();
-
-monitoring.captureException(error, { requestId });
-await monitoring.reportRelease({ version: "2.4.1", commit: "a82f91c" });
+nex.init({ service: "ark-api", checks: { database: nex.checks.postgres(pool), cache: nex.checks.redis(redis) } });
+nex.captureException(error);
 ```
 
-See [`packages/monitoring/README.md`](packages/monitoring/README.md).
+See [`packages/nex-js/README.md`](packages/nex-js/README.md). Formerly
+`@nerdstackgrp/monitoring`.
 
-### `nerdstack-monitoring` for Python
+### `nex-py`
 
-The same reporting for Python services (FastAPI, Starlette, Django, Flask,
-Celery, scripts): errors with frames, breadcrumbs from logging, users and
-requests, crash reports, heartbeats and releases. See
-[`packages/monitoring-py/README.md`](packages/monitoring-py/README.md).
+The same for Python services (FastAPI, Starlette, Django, Flask, Celery,
+scripts). See [`packages/nex-py/README.md`](packages/nex-py/README.md).
 
 ### `nerdstack-ark` for Python
 
@@ -143,7 +142,7 @@ The TypeScript packages require Node.js >= 20 and ship ESM, CommonJS, and declar
 
 - `examples/browser-upload/` — React widget with direct uploads and progress
 - `examples/backend-usage/` — REST and S3 usage patterns
-- `examples/monitoring/` — a Node/Bun API wired to Nerdstack Monitoring
+- `examples/monitoring/` — a Node/Bun API wired to Nex
 
 ## Docs
 

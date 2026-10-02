@@ -5,7 +5,7 @@ import http from "node:http";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 
-import { normalizeRoute } from "../packages/monitoring/dist/index.js";
+import { normalizeRoute } from "../packages/nex-js/dist/index.js";
 import { TOKEN, fakeApi, json, makeClient, sleep, startServer } from "./monitoringHelpers.mjs";
 
 /**
@@ -17,7 +17,7 @@ import { TOKEN, fakeApi, json, makeClient, sleep, startServer } from "./monitori
  * be the reason a crashed application keeps running.
  */
 
-const DIST = pathToFileURL(new URL("../packages/monitoring/dist/index.js", import.meta.url).pathname).href;
+const DIST = pathToFileURL(new URL("../packages/nex-js/dist/index.js", import.meta.url).pathname).href;
 
 function runChild(script, { execArgv = [], env = {} } = {}) {
   return new Promise((resolve) => {

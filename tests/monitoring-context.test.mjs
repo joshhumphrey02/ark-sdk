@@ -3,7 +3,7 @@ import diagnostics from "node:diagnostics_channel";
 import { EventEmitter } from "node:events";
 import test from "node:test";
 
-import { parseStack } from "../packages/monitoring/dist/index.js";
+import { parseStack } from "../packages/nex-js/dist/index.js";
 import { fakeApi, makeClient, sleep } from "./monitoringHelpers.mjs";
 
 /**
@@ -39,7 +39,7 @@ test("exceptions carry frames, their causes and how they were caught", async () 
   assert.equal(frame.inApp, true);
   assert.equal(event.handled, true);
   assert.deepEqual(event.fingerprint, ["orders", "save"]);
-  assert.equal(event.sdk.name, "@nerdstackgrp/monitoring");
+  assert.equal(event.sdk.name, "nex-js");
   assert.ok(["node", "bun"].includes(event.contexts.runtime.name));
   assert.equal(event.release, "2.4.1", "the version is the event's release");
   // Older servers still get the flat error.
@@ -160,7 +160,7 @@ test("start() reports crashes and records console and HTTP breadcrumbs by defaul
     const silenced = console.info;
     console.info = () => {};
     try {
-      console.warn("[nerdstack-monitoring] own log line");
+      console.warn("[nex] own log line");
     } catch {
       // ignore
     }
@@ -183,7 +183,7 @@ test("start() reports crashes and records console and HTTP breadcrumbs by defaul
   const http = event.breadcrumbs.find((b) => b.category === "http");
   assert.equal(http.message, "GET https://payments.example/charge → 502");
   assert.equal(http.level, "error");
-  assert.ok(!event.breadcrumbs.some((b) => /nerdstack-monitoring/.test(b.message ?? "")), "the SDK's own logs are not breadcrumbs");
+  assert.ok(!event.breadcrumbs.some((b) => /\[nex\]/.test(b.message ?? "")), "the SDK's own logs are not breadcrumbs");
 });
 
 test("events carry the OpenTelemetry trace when the application uses OpenTelemetry", async () => {

@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.3.0
+
+Renamed from `@nerdstackgrp/monitoring` to `@nerdstackgrp/nex-js`, now with
+a browser side. Replace the import; the server API is unchanged and the
+`MONITORING_*` variables still work. Dependency reports, calls, vitals and
+jobs need a Nex server from October 2026; with an older server, heartbeats
+fall back to plain dependency statuses by themselves.
+
+### Added
+
+- `@nerdstackgrp/nex-js/client`: errors and crashes from browsers, with the
+  page, browser, OS, device, user, release and breadcrumbs (navigations,
+  clicks, fetch/XHR, console). Authenticates with a public browser key
+  (`nex_pub_…`); refuses secret tokens.
+- `@nerdstackgrp/nex-js/react`: `ErrorBoundary` and `reactErrorHandler()`.
+- `@nerdstackgrp/nex-js/server`, the same as the package root, adds:
+  - `init()` and module functions (`captureException`, `setUser`, `job`, …)
+    sharing one client per process;
+  - `checks.postgres`, `mysql`, `redis`, `mongodb`, `rabbitmq`, `http`,
+    `tcp`, `custom`: dependency checks that report kind, target, latency
+    and metrics (pool usage, Redis memory and hit rate, queue depth and
+    consumers);
+  - outgoing HTTP calls per target with each heartbeat, for the service map
+    (on Bun too);
+  - memory, CPU and event-loop delay with each heartbeat;
+  - `job(name, fn)`: scoped, counted and timed background work;
+  - `captureRequestError()` for Next.js `onRequestError`.
+- `NEX_API_URL`, `NEX_TOKEN`, `NEX_SERVICE`, `NEX_ENVIRONMENT`, `NEX_ENABLED`.
+- Stack traces from Firefox and Safari.
+
+### Changed
+
+- Heartbeats send each dependency as a report (`{ status, kind, target,
+  latencyMs, metrics, error }`) instead of a bare status.
+- The SDK's log prefix is `[nex]`.
+
 ## 0.2.0
 
 Errors arrive with everything Nex needs to group them and show what led to

@@ -1,5 +1,5 @@
 /**
- * HTTP to the monitoring API, built so that Nerdstack being slow, down or
+ * HTTP to the monitoring API, built so that Nex being slow, down or
  * misconfigured can never hurt the application:
  *
  * - every request has a hard timeout (default 3s);
@@ -26,7 +26,7 @@ const MAX_PAUSE_MS = 5 * 60_000;
 const FAILURES_BEFORE_PAUSE = 3;
 /** Never sleep longer than this between retries; longer waits become a pause. */
 const MAX_RETRY_WAIT_MS = 10_000;
-const USER_AGENT = "nerdstack-monitoring-js/0.1.0";
+const USER_AGENT = "nex-js";
 
 export type Clock = {
   now(): number;
@@ -80,11 +80,11 @@ export class Transport {
   warnOnce(key: string, message: string) {
     if (this.warned.has(key)) return;
     this.warned.add(key);
-    this.config.logger?.warn(`[nerdstack-monitoring] ${message}`);
+    this.config.logger?.warn(`[nex] ${message}`);
   }
 
   private debug(message: string) {
-    if (this.config.debug) this.config.logger?.debug?.(`[nerdstack-monitoring] ${message}`);
+    if (this.config.debug) this.config.logger?.debug?.(`[nex] ${message}`);
   }
 
   async request<T>(method: "GET" | "POST", path: string, body?: unknown, retries = this.config.maxRetries): Promise<SendResult<T>> {
@@ -174,12 +174,12 @@ export class Transport {
         this.authFailed = true;
         this.warnOnce(
           "401",
-          "The monitoring token was rejected (401). Reporting is stopped until restart; check MONITORING_TOKEN, or generate a new token in Nerdstack Monitoring.",
+          "The Nex token was rejected (401). Reporting is stopped until restart; check NEX_TOKEN, or create a new SDK token in Nex.",
         );
       } else if (!retryable) {
         this.warnOnce(`${status}:${path}:${detail ?? ""}`, `${method} ${path} was rejected (${status})${detail ? `: ${detail.replace(/[.\s]+$/, "")}` : ""}. It will not be retried.`);
       } else if (status === 503) {
-        this.warnOnce("503", "Nerdstack Monitoring is unavailable (503). Events are buffered in memory and retried later.");
+        this.warnOnce("503", "Nex is unavailable (503). Events are buffered in memory and retried later.");
       }
 
       return {

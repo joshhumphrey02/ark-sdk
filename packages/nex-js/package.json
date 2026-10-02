@@ -1,0 +1,108 @@
+{
+  "name": "@nerdstackgrp/nex-js",
+  "version": "0.3.0",
+  "description": "Nex for JavaScript: errors and crashes with full context from Node, Bun and the browser, dependency health (databases, Redis, RabbitMQ), service maps, runtime and job metrics, and releases.",
+  "license": "MIT",
+  "author": "Nerdstack",
+  "homepage": "https://github.com/joshhumphrey02/ark-sdk/tree/master/packages/nex-js#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joshhumphrey02/ark-sdk.git",
+    "directory": "packages/nex-js"
+  },
+  "bugs": {
+    "url": "https://github.com/joshhumphrey02/ark-sdk/issues"
+  },
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./server": {
+      "import": {
+        "types": "./dist/server.d.ts",
+        "default": "./dist/server.js"
+      },
+      "require": {
+        "types": "./dist/server.d.cts",
+        "default": "./dist/server.cjs"
+      }
+    },
+    "./client": {
+      "import": {
+        "types": "./dist/client.d.ts",
+        "default": "./dist/client.js"
+      },
+      "require": {
+        "types": "./dist/client.d.cts",
+        "default": "./dist/client.cjs"
+      }
+    },
+    "./react": {
+      "import": {
+        "types": "./dist/react.d.ts",
+        "default": "./dist/react.js"
+      },
+      "require": {
+        "types": "./dist/react.d.cts",
+        "default": "./dist/react.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "keywords": [
+    "nex",
+    "nerdstack",
+    "monitoring",
+    "error-reporting",
+    "crash-reporting",
+    "observability",
+    "heartbeat",
+    "browser",
+    "nextjs",
+    "react",
+    "sdk"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "prepublishOnly": "npm run build"
+  },
+  "peerDependencies": {
+    "react": ">=17"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.0.0",
+    "react": "^19.0.0",
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.2"
+  }
+}

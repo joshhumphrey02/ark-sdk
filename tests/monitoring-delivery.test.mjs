@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { TOKEN, captureLogger, fakeApi, json, makeClient, sleep, startServer } from "./monitoringHelpers.mjs";
-import { Monitoring, createMonitoring } from "../packages/monitoring/dist/index.js";
+import { Monitoring, createMonitoring } from "../packages/nex-js/dist/index.js";
 
 /**
  * Delivery when Nerdstack is slow, failing, or gone. The rule these tests pin:
@@ -218,7 +218,7 @@ test("reports reach a real HTTP server with the documented shape", async () => {
     const [heartbeat, event] = server.requests;
     assert.equal(heartbeat.url, "/api/v1/monitoring/heartbeat");
     assert.equal(heartbeat.headers.authorization, `Bearer ${TOKEN}`);
-    assert.match(heartbeat.headers["user-agent"], /nerdstack-monitoring-js/);
+    assert.match(heartbeat.headers["user-agent"], /nex-js/);
     assert.equal(heartbeat.body.environment, "staging");
     assert.equal(event.url, "/api/v1/monitoring/events");
     assert.equal(event.body.type, "exception");

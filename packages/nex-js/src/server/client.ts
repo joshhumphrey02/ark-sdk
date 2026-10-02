@@ -9,7 +9,7 @@
  */
 
 import { normalizeEnvironment, resolveConfig, type DependencyCheck, type MonitoringOptions, type OutgoingEvent, type ResolvedConfig } from "./config";
-import { isErrorLike, normalizeError } from "./errors";
+import { isErrorLike, normalizeError } from "../shared/errors";
 import {
   HttpMetrics,
   normalizeRoute,
@@ -20,15 +20,18 @@ import {
   type NodeHttpServerLike,
   type ServerResponseLike,
 } from "./http";
-import { installConsoleBreadcrumbs, installHttpBreadcrumbs } from "./breadcrumbs";
-import { activeTrace } from "./otel";
+import { callBreadcrumb, installConsoleBreadcrumbs, installHttpObserver } from "./breadcrumbs";
+import { cleanTarget, type DependencyResult } from "./checks";
+import { CallRecorder, JobRecorder, RuntimeSampler } from "./stats";
+import { activeTrace } from "../shared/otel";
 import { installFatalHandlers, type UnhandledOptions } from "./process";
 import { ScopeManager, type Breadcrumb, type MonitoringUser, type RequestInfo, type Scope } from "./scope";
-import { exceptionChain } from "./stacktrace";
-import { boundMetadata, byteLength, redact, redactBounded, truncate } from "./redact";
+import { exceptionChain } from "../shared/stacktrace";
+import { boundMetadata, byteLength, redact, redactBounded, truncate } from "../shared/redact";
 import { realClock, Transport, type Clock } from "./transport";
 import type {
   ApplicationConfigResponse,
+  DependencyReport,
   DependencyStatus,
   EventPayload,
   HeartbeatPayload,
@@ -40,12 +43,12 @@ import type {
   MonitoringStatus,
   ReleasePayload,
   ReleaseResponse,
-} from "./types";
+} from "../shared/types";
 
 const MAX_BATCH = 25;
 /** Stay under the server's 1MB events body limit with room for the envelope. */
 const MAX_BATCH_BYTES = 900_000;
-export const SDK_NAME = "@nerdstackgrp/monitoring";
+export const SDK_NAME = "nex-js";
 export const SDK_VERSION = "0.2.0";
 const MESSAGE_LIMIT = 2_000;
 const METADATA_BYTES = 8_000;
@@ -72,9 +75,37 @@ function toDependencyStatus(value: unknown): DependencyStatus {
   return isDependencyStatus(value) ? value : "unknown";
 }
 
+function finite(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+/** A check's result → the report sent, bounded and without credentials. */
+function toDependencyReport(result: DependencyResult | DependencyReport, extra: Partial<DependencyReport> = {}): DependencyReport {
+  const object = typeof result === "object" && result !== null ? (result as Partial<DependencyReport> & { status?: unknown }) : null;
+  const report: DependencyReport = { status: toDependencyStatus(object ? object.status : result) };
+  const kind = object?.kind ?? extra.kind;
+  const target = cleanTarget(object?.target ?? extra.target);
+  if (kind) report.kind = truncate(String(kind), 40);
+  if (target) report.target = target;
+  const latency = object?.latencyMs ?? extra.latencyMs;
+  if (finite(latency)) report.latencyMs = Math.max(0, Math.round(latency));
+  if (object?.metrics && typeof object.metrics === "object") {
+    const metrics: Record<string, number> = {};
+    for (const [key, value] of Object.entries(object.metrics).slice(0, 40)) if (finite(value)) metrics[truncate(key, 80)] = value;
+    if (Object.keys(metrics).length) report.metrics = metrics;
+  }
+  const error = object?.error ?? extra.error;
+  if (error) report.error = redactBounded(String(error), 500);
+  return report;
+}
+
+function statusOf(dependency: DependencyStatus | DependencyReport): DependencyStatus {
+  return typeof dependency === "string" ? dependency : dependency.status;
+}
+
 /** A dependency that is down makes the service degraded, not down: it is still answering. */
-export function deriveStatus(dependencies: Record<string, DependencyStatus>): MonitoringStatus {
-  const values = Object.values(dependencies);
+export function deriveStatus(dependencies: Record<string, DependencyStatus | DependencyReport>): MonitoringStatus {
+  const values = Object.values(dependencies).map(statusOf);
   return values.some((s) => s === "down" || s === "unhealthy" || s === "degraded") ? "degraded" : "healthy";
 }
 
@@ -123,7 +154,7 @@ export type HeartbeatOptions = {
   /** Overrides the status derived from dependencies. */
   status?: MonitoringStatus;
   /** Dependency health for this heartbeat. `true`/`false` mean healthy/down. Skips the configured `checks`. */
-  dependencies?: Record<string, DependencyStatus | boolean>;
+  dependencies?: Record<string, DependencyStatus | boolean | DependencyReport>;
   /** Milliseconds for the service's own health probe. Default: how long `checks` took. */
   responseTime?: number;
 };
@@ -135,6 +166,21 @@ export type StartOptions = {
   captureUnhandled?: boolean | UnhandledOptions;
   /** Record console output and outgoing HTTP calls as breadcrumbs. Default true. */
   breadcrumbs?: boolean | BreadcrumbOptions;
+  /**
+   * Count outgoing HTTP calls per target (count, errors, latency) and send
+   * them with each heartbeat, so Nex can draw which services call which.
+   * Default true.
+   */
+  serviceMap?: boolean;
+  /** Send memory, CPU and event-loop delay with each heartbeat. Default true. */
+  runtimeMetrics?: boolean;
+};
+
+export type JobOptions = {
+  /** Tags on errors from this run. */
+  tags?: Record<string, string | number | boolean>;
+  /** Re-throw the job's error after reporting it. Default true. */
+  rethrow?: boolean;
 };
 
 export type ReleaseOptions = {
@@ -183,6 +229,11 @@ export class Monitoring {
   readonly #scopes = new ScopeManager();
   #uninstallBreadcrumbs: (() => void)[] = [];
   #contexts: JsonObject | null = null;
+  readonly #calls = new CallRecorder();
+  readonly #jobs = new JobRecorder();
+  #runtime: RuntimeSampler | null = null;
+  /** Set when the server took only plain dependency statuses (before 2026-10). */
+  #legacyHeartbeat = false;
 
   constructor(options: MonitoringOptions = {}, clock: Clock = realClock) {
     this.#config = resolveConfig(options);
@@ -336,7 +387,7 @@ export class Monitoring {
     return queued;
   }
 
-  /** `info` → INFO … `critical` → CRITICAL. `critical` opens an incident in Nerdstack. */
+  /** `info` → INFO … `critical` → CRITICAL. `critical` opens an incident in Nex. */
   captureMessage(message: string, level: MonitoringLevel = "info", options: Omit<CaptureOptions, "level"> = {}): boolean {
     const type: MonitoringEventType = level === "warning" ? "warning" : level === "info" ? "custom" : "error";
     return this.#capture({
@@ -622,20 +673,23 @@ export class Monitoring {
     return this.#heartbeatInFlight;
   }
 
-  async #runChecks(checks: Record<string, DependencyCheck>): Promise<Record<string, DependencyStatus>> {
+  async #runChecks(checks: Record<string, DependencyCheck>): Promise<Record<string, DependencyReport>> {
     const entries = Object.entries(checks).slice(0, MAX_DEPENDENCIES);
     const results = await Promise.all(
-      entries.map(async ([name, check]): Promise<[string, DependencyStatus]> => {
+      entries.map(async ([name, check]): Promise<[string, DependencyReport]> => {
+        const definition = typeof check === "function" ? { check } : check;
+        const about = { kind: definition.kind, target: definition.target };
+        const started = performance.now();
         let timer: ReturnType<typeof setTimeout> | undefined;
         try {
-          const timeout = new Promise<DependencyStatus>((resolve) => {
-            timer = setTimeout(() => resolve("down"), this.#config.checkTimeout);
+          const timeout = new Promise<DependencyReport>((resolve) => {
+            timer = setTimeout(() => resolve({ status: "down", error: `No answer within ${this.#config.checkTimeout}ms` }), this.#config.checkTimeout);
             unref(timer);
           });
-          const value = await Promise.race([Promise.resolve().then(check).then(toDependencyStatus), timeout]);
-          return [name, value];
-        } catch {
-          return [name, "down"];
+          const result = await Promise.race([Promise.resolve().then(definition.check), timeout]);
+          return [name, toDependencyReport(result, { ...about, latencyMs: performance.now() - started })];
+        } catch (error) {
+          return [name, toDependencyReport({ status: "down" }, { ...about, latencyMs: performance.now() - started, error: error instanceof Error ? error.message : String(error) })];
         } finally {
           clearTimeout(timer);
         }
@@ -646,21 +700,24 @@ export class Monitoring {
 
   async #sendHeartbeat(options: HeartbeatOptions): Promise<HeartbeatResponse | null> {
     const started = this.#clock.now();
-    let dependencies: Record<string, DependencyStatus>;
+    let dependencies: Record<string, DependencyReport>;
     let ranChecks = false;
     if (options.dependencies) {
       dependencies = Object.fromEntries(
         Object.entries(options.dependencies)
           .slice(0, MAX_DEPENDENCIES)
-          .map(([name, value]) => [name, toDependencyStatus(value)]),
+          .map(([name, value]) => [name, toDependencyReport(value as DependencyResult)]),
       );
     } else {
       ranChecks = Object.keys(this.#config.checks).length > 0;
       dependencies = ranChecks ? await this.#runChecks(this.#config.checks) : {};
     }
     const cleanDependencies = Object.fromEntries(
-      Object.entries(dependencies).map(([name, status]) => [truncate(name.trim() || "dependency", 64), status]),
+      Object.entries(dependencies).map(([name, report]) => [truncate(name.trim() || "dependency", 64), report]),
     );
+    const calls = this.#running ? this.#calls.take() : [];
+    const jobs = this.#jobs.take();
+    const runtime = this.#runtime?.take();
 
     const payload: HeartbeatPayload = {
       service: this.#config.service,
@@ -674,15 +731,62 @@ export class Monitoring {
           : {}),
       ...(this.#config.environment ? { environment: this.#config.environment } : {}),
       ...(Object.keys(cleanDependencies).length ? { dependencies: cleanDependencies } : {}),
+      ...(calls.length ? { calls } : {}),
+      ...(jobs.length ? { jobs } : {}),
+      ...(runtime && Object.keys(runtime).length ? { runtime } : {}),
       timestamp: new Date(this.#clock.now()).toISOString(),
     };
 
     // One retry at most: the next scheduled heartbeat supersedes this one.
-    const result = await this.#transport.request<HeartbeatResponse>("POST", "/heartbeat", payload, Math.min(1, this.#config.maxRetries));
+    const retries = Math.min(1, this.#config.maxRetries);
+    let result = await this.#transport.request<HeartbeatResponse>("POST", "/heartbeat", this.#legacyHeartbeat ? legacyHeartbeat(payload) : payload, retries);
+    if (!result.ok && result.status === 422 && result.detail?.startsWith("dependencies") && !this.#legacyHeartbeat) {
+      // A server from before dependency reports takes statuses only.
+      this.#legacyHeartbeat = true;
+      result = await this.#transport.request<HeartbeatResponse>("POST", "/heartbeat", legacyHeartbeat(payload), retries);
+    }
     if (!result.ok) return null;
     const suggested = result.data?.expectedIntervalSeconds;
     if (typeof suggested === "number" && suggested > 0) this.#serverIntervalMs = suggested * 1000;
     return result.data;
+  }
+
+  // --- Jobs ------------------------------------------------------------------------------
+
+  /**
+   * Runs one unit of background work (a queue message, a cron run, a job)
+   * with its own scope. Its errors are reported with the job's name, and
+   * every run is counted and timed for the service's job stats in Nex:
+   *
+   * ```ts
+   * channel.consume("orders", (msg) => monitoring.job("process-order", () => handle(msg)));
+   * ```
+   */
+  async job<T>(name: string, fn: () => T | Promise<T>, options: JobOptions = {}): Promise<T | undefined> {
+    const started = performance.now();
+    return this.#scopes.run(async (scope) => {
+      scope.transaction = name;
+      for (const [key, value] of Object.entries(options.tags ?? {})) scope.tags[key] = String(value);
+      try {
+        const result = await fn();
+        this.#recordJob(name, performance.now() - started, false);
+        return result;
+      } catch (error) {
+        this.#recordJob(name, performance.now() - started, true);
+        this.captureException(error, { mechanism: "job", handled: false, tags: { job: name } });
+        if (options.rethrow === false) return undefined;
+        throw error;
+      }
+    });
+  }
+
+  #recordJob(name: string, durationMs: number, failed: boolean) {
+    if (!this.#config.enabled) return;
+    try {
+      this.#jobs.record(name, durationMs, failed, this.#clock.now());
+    } catch {
+      // Never break the job.
+    }
   }
 
   /**
@@ -696,7 +800,7 @@ export class Monitoring {
     if (options.captureUnhandled !== false) {
       this.captureUnhandled(typeof options.captureUnhandled === "object" ? options.captureUnhandled : {});
     }
-    if (options.breadcrumbs !== false) this.#installBreadcrumbs(typeof options.breadcrumbs === "object" ? options.breadcrumbs : {});
+    this.#installObservers(options);
 
     // Timers are unref'd, so a process that finishes its work exits without
     // waiting for the next batch. Flush once when the event loop empties;
@@ -739,6 +843,8 @@ export class Monitoring {
     this.#removeBeforeExit?.();
     this.#removeBeforeExit = null;
     for (const uninstall of this.#uninstallBreadcrumbs.splice(0)) uninstall();
+    this.#runtime?.stop();
+    this.#runtime = null;
     for (const release of this.#httpReleases.splice(0)) release();
     this.#http.flushSummary();
     await this.flush(options.flushTimeout ?? 2_000);
@@ -748,12 +854,15 @@ export class Monitoring {
     return this.#running;
   }
 
-  #installBreadcrumbs(options: BreadcrumbOptions) {
+  #installObservers(options: StartOptions) {
     for (const uninstall of this.#uninstallBreadcrumbs.splice(0)) uninstall();
+    const crumbs: BreadcrumbOptions | null = options.breadcrumbs === false ? null : typeof options.breadcrumbs === "object" ? options.breadcrumbs : {};
     const add = (crumb: Breadcrumb) => this.addBreadcrumb(crumb);
     try {
-      if (options.console !== false) this.#uninstallBreadcrumbs.push(installConsoleBreadcrumbs(add));
-      if (options.http !== false) {
+      if (crumbs && crumbs.console !== false) this.#uninstallBreadcrumbs.push(installConsoleBreadcrumbs(add));
+      const httpCrumbs = Boolean(crumbs && crumbs.http !== false);
+      const serviceMap = options.serviceMap !== false;
+      if (httpCrumbs || serviceMap) {
         const origin = (() => {
           try {
             return new URL(this.#config.endpoint).origin;
@@ -761,10 +870,23 @@ export class Monitoring {
             return null;
           }
         })();
-        this.#uninstallBreadcrumbs.push(installHttpBreadcrumbs(add, origin, () => performance.now()));
+        this.#uninstallBreadcrumbs.push(
+          installHttpObserver(
+            (call) => {
+              if (httpCrumbs) add(callBreadcrumb(call));
+              if (serviceMap) this.#calls.record(call.url, call.durationMs, call.status, Boolean(call.error));
+            },
+            origin,
+            () => performance.now(),
+          ),
+        );
       }
     } catch {
       // Breadcrumbs are a nicety; never fail start() over them.
+    }
+    if (options.runtimeMetrics !== false) {
+      this.#runtime = new RuntimeSampler(() => this.#clock.now());
+      this.#runtime.start();
     }
   }
 
@@ -794,7 +916,7 @@ export class Monitoring {
     return result.ok ? (result.data?.release ?? null) : null;
   }
 
-  /** The application's identity and registered services, as Nerdstack sees this token. */
+  /** The application's identity and registered services, as Nex sees this token. */
   async fetchConfig(): Promise<ApplicationConfigResponse | null> {
     if (!this.#config.enabled) return null;
     const result = await this.#transport.request<ApplicationConfigResponse>("GET", "/config");
@@ -897,6 +1019,39 @@ export class Monitoring {
     };
   }
 
+  /**
+   * Next.js: reports errors from server components, route handlers, server
+   * actions and middleware. In `instrumentation.ts`:
+   *
+   * ```ts
+   * export const onRequestError: Instrumentation.onRequestError = (...args) => nex.captureRequestError(...args);
+   * ```
+   */
+  captureRequestError(
+    error: unknown,
+    request: { path?: string; method?: string; headers?: Record<string, string | string[] | undefined> },
+    context: { routerKind?: string; routePath?: string; routeType?: string; renderSource?: string } = {},
+  ): void {
+    try {
+      const scope = this.#scopes.current.fork();
+      const path = (request.path ?? "/").replace(/[?#].*$/, "");
+      const agent = request.headers?.["user-agent"];
+      scope.request = {
+        method: (request.method ?? "GET").toUpperCase(),
+        url: truncate(path, 2_000),
+        route: truncate(context.routePath ?? normalizeRoute(path), 200),
+        ...(typeof agent === "string" ? { userAgent: truncate(agent, 500) } : {}),
+      };
+      const tags: Record<string, string> = {};
+      if (context.routerKind) tags["next.router"] = context.routerKind;
+      if (context.routeType) tags["next.route_type"] = context.routeType;
+      if (context.renderSource) tags["next.render_source"] = context.renderSource;
+      this.#scopes.run(() => this.captureException(error, { mechanism: "nextjs.onRequestError", handled: false, tags }), scope);
+    } catch {
+      // Never break Next's error handling.
+    }
+  }
+
   #requestInfo(req: IncomingMessageLike): RequestInfo {
     const method = (req.method ?? "GET").toUpperCase();
     const url = (req.originalUrl ?? req.url ?? "/").replace(/[?#].*$/, "");
@@ -983,9 +1138,18 @@ export class Monitoring {
   }
 }
 
+/** The heartbeat as servers before 2026-10 accept it: dependency statuses only. */
+function legacyHeartbeat(payload: HeartbeatPayload): HeartbeatPayload {
+  const { calls: _calls, jobs: _jobs, runtime: _runtime, ...rest } = payload;
+  return {
+    ...rest,
+    ...(payload.dependencies ? { dependencies: Object.fromEntries(Object.entries(payload.dependencies).map(([name, d]) => [name, statusOf(d)])) } : {}),
+  };
+}
+
 /**
- * Creates a client. With no arguments it reads MONITORING_API_URL,
- * MONITORING_TOKEN, MONITORING_SERVICE, APP_VERSION and MONITORING_ENVIRONMENT.
+ * Creates a client. With no arguments it reads NEX_API_URL, NEX_TOKEN,
+ * NEX_SERVICE, APP_VERSION and NEX_ENVIRONMENT (or their MONITORING_ forms).
  * Throws `MonitoringConfigError` once, at startup, if misconfigured.
  */
 export function createMonitoring(options: MonitoringOptions = {}): Monitoring {

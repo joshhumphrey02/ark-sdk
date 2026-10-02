@@ -7,4 +7,4 @@ ships in a published SDK.
   plus the backend route that mints its short-lived session.
 - `backend-usage/` — Node/Bun usage of both `Ark` (REST) and `ArkS3` (S3).
 - `monitoring/` — a Node/Bun API reporting heartbeats, errors, releases and HTTP
-  timings with `@nerdstackgrp/monitoring`.
+  timings with `@nerdstackgrp/nex-js`.

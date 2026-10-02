@@ -3,7 +3,7 @@
 
 import http from "node:http";
 
-import { createMonitoring } from "../packages/monitoring/dist/index.js";
+import { createMonitoring } from "../packages/nex-js/dist/index.js";
 
 export const TOKEN = `nsk_test_${"A1b2C3d4E5".repeat(4)}xyz`;
 

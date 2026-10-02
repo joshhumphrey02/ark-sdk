@@ -7,9 +7,14 @@
  * constructed, the SDK never throws again.
  */
 
-import type { DependencyStatus, MonitoringEnvironment, MonitoringEventType } from "./types";
+import type { MonitoringEnvironment, MonitoringEventType } from "../shared/types";
+import type { DependencyCheckDefinition, DependencyResult } from "./checks";
 
-export type DependencyCheck = () => boolean | DependencyStatus | Promise<boolean | DependencyStatus>;
+/**
+ * A dependency check: a function (`() => pool.query("SELECT 1").then(() => true)`)
+ * or one of the ready-made `checks.*`, which also say what they check.
+ */
+export type DependencyCheck = (() => DependencyResult | Promise<DependencyResult>) | DependencyCheckDefinition;
 
 export type LoggerLike = {
   warn(message: string): void;
@@ -26,7 +31,7 @@ export type OutgoingEvent = {
   service?: string | null;
   timestamp: string;
   /** The error chain with stack frames (exceptions only). */
-  exception?: import("./stacktrace").ExceptionPayload[];
+  exception?: import("../shared/stacktrace").ExceptionPayload[];
   /** False for crashes (uncaught exceptions, unhandled rejections). */
   handled?: boolean;
   /** Overrides grouping. */
@@ -39,7 +44,7 @@ export interface MonitoringOptions {
   /**
    * The monitoring API's base URL, used as given, e.g.
    * `https://nerdstackgrp.com/api/v1/monitoring` or `https://api.example.com/v1`.
-   * Env: `MONITORING_API_URL`. This is the only address the SDK knows, so the
+   * Env: `NEX_API_URL` (or `MONITORING_API_URL`). This is the only address the SDK knows, so the
    * API can move without an SDK release.
    */
   apiUrl?: string;
@@ -49,9 +54,9 @@ export interface MonitoringOptions {
    * `apiUrl` is set.
    */
   endpoint?: string;
-  /** `nsk_live_…` / `nsk_test_…`. Env: `MONITORING_TOKEN`. */
+  /** `nsk_live_…` / `nsk_test_…`. Env: `NEX_TOKEN` (or `MONITORING_TOKEN`). */
   token?: string;
-  /** Service slug registered in Nerdstack, e.g. `ark-api`. Env: `MONITORING_SERVICE`. */
+  /** Service slug, e.g. `ark-api`; registered in Nex on first report. Env: `NEX_SERVICE` (or `MONITORING_SERVICE`). */
   service?: string;
   /** Env: `APP_VERSION`, then `npm_package_version`. */
   version?: string;
@@ -61,18 +66,18 @@ export interface MonitoringOptions {
    * Usually leave unset: the token already belongs to one environment, and
    * the server uses it. When set, it must name the token's environment or the
    * server refuses the report. Any common spelling (`prod`, `staging`).
-   * Env: `MONITORING_ENVIRONMENT`. NODE_ENV is deliberately not used: staging
+   * Env: `NEX_ENVIRONMENT` (or `MONITORING_ENVIRONMENT`). NODE_ENV is deliberately not used: staging
    * servers often run with NODE_ENV=production.
    */
   environment?: string;
-  /** Set false to make every call a no-op (tests, local dev). Env: `MONITORING_ENABLED=false`. */
+  /** Set false to make every call a no-op (tests, local dev). Env: `NEX_ENABLED=false`. */
   enabled?: boolean;
 
   /** Default interval for `start()`. Default: the server's suggestion, else 30s. */
   heartbeatInterval?: number;
   /** Per-request timeout. Default 3000ms. */
   requestTimeout?: number;
-  /** Events held in memory while Nerdstack is unreachable; oldest dropped first. Default 100. */
+  /** Events held in memory while Nex is unreachable; oldest dropped first. Default 100. */
   maxBufferedEvents?: number;
   /** Retries per request for network errors, 5xx and 429. Default 2. */
   maxRetries?: number;
@@ -130,7 +135,7 @@ export class MonitoringConfigError extends Error {
   readonly problems: string[];
 
   constructor(problems: string[]) {
-    super(`Nerdstack Monitoring is misconfigured:\n  - ${problems.join("\n  - ")}`);
+    super(`Nex is misconfigured:\n  - ${problems.join("\n  - ")}`);
     this.name = "MonitoringConfigError";
     this.problems = problems;
   }
@@ -217,27 +222,27 @@ function positive(name: string, value: number | undefined, fallback: number, min
 }
 
 export function resolveConfig(options: MonitoringOptions = {}, env: Env = processEnv()): ResolvedConfig {
-  const enabled = options.enabled ?? env.MONITORING_ENABLED?.trim().toLowerCase() !== "false";
+  const enabled = options.enabled ?? first(env.NEX_ENABLED, env.MONITORING_ENABLED)?.toLowerCase() !== "false";
   const problems: string[] = [];
 
-  const apiUrlRaw = first(options.apiUrl, env.MONITORING_API_URL);
+  const apiUrlRaw = first(options.apiUrl, env.NEX_API_URL, env.MONITORING_API_URL);
   const endpointRaw = apiUrlRaw ? undefined : first(options.endpoint, env.MONITORING_URL);
-  const token = first(options.token, env.MONITORING_TOKEN) ?? "";
-  const service = first(options.service, env.MONITORING_SERVICE) ?? "";
+  const token = first(options.token, env.NEX_TOKEN, env.MONITORING_TOKEN) ?? "";
+  const service = first(options.service, env.NEX_SERVICE, env.MONITORING_SERVICE) ?? "";
 
   let endpoint = "";
   if (enabled) {
     if (!apiUrlRaw && !endpointRaw) {
-      problems.push("apiUrl is required (option `apiUrl` or MONITORING_API_URL; the older `endpoint` / MONITORING_URL also works)");
+      problems.push("apiUrl is required (option `apiUrl` or NEX_API_URL; MONITORING_API_URL and the older `endpoint` / MONITORING_URL also work)");
     } else {
       const normalized = apiUrlRaw ? normalizeBaseUrl(apiUrlRaw, "apiUrl") : normalizeBaseUrl(endpointRaw!, "endpoint");
       endpoint = normalized.value;
       if (normalized.problem) problems.push(normalized.problem);
     }
     // The token's value is never echoed, not even in validation errors.
-    if (!token) problems.push("token is required (option `token` or MONITORING_TOKEN)");
-    else if (!TOKEN_PATTERN.test(token)) problems.push("token is not a Nerdstack monitoring token (expected nsk_live_… or nsk_test_…)");
-    if (!service) problems.push("service is required (option `service` or MONITORING_SERVICE)");
+    if (!token) problems.push("token is required (option `token` or NEX_TOKEN)");
+    else if (!TOKEN_PATTERN.test(token)) problems.push("token is not a Nex SDK token (expected nsk_live_… or nsk_test_…)");
+    if (!service) problems.push("service is required (option `service` or NEX_SERVICE)");
     else if (!SERVICE_PATTERN.test(service)) problems.push(`service "${service}" is not a valid slug (lowercase letters, digits, - _ .)`);
   }
 
@@ -248,7 +253,7 @@ export function resolveConfig(options: MonitoringOptions = {}, env: Env = proces
     service,
     version: first(options.version, env.APP_VERSION, env.npm_package_version),
     commit: first(options.commit, env.APP_COMMIT, env.GIT_COMMIT, env.SOURCE_COMMIT, env.GITHUB_SHA, env.VERCEL_GIT_COMMIT_SHA),
-    environment: normalizeEnvironment(first(options.environment, env.MONITORING_ENVIRONMENT)),
+    environment: normalizeEnvironment(first(options.environment, env.NEX_ENVIRONMENT, env.MONITORING_ENVIRONMENT)),
     heartbeatInterval: options.heartbeatInterval === undefined ? undefined : positive("heartbeatInterval", options.heartbeatInterval, 30_000, 1_000, problems),
     requestTimeout: positive("requestTimeout", options.requestTimeout, 3_000, 100, problems),
     maxBufferedEvents: Math.floor(positive("maxBufferedEvents", options.maxBufferedEvents, 100, 0, problems)),

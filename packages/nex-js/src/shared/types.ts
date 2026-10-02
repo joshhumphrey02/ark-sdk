@@ -45,6 +45,72 @@ export type JsonObject = { [key: string]: JsonValue };
 
 // --- Request bodies ------------------------------------------------------------
 
+/** Kinds of dependency Nex draws with their own icon. Anything else is accepted too. */
+export type DependencyKind =
+  | "postgres"
+  | "mysql"
+  | "mongodb"
+  | "redis"
+  | "rabbitmq"
+  | "kafka"
+  | "elasticsearch"
+  | "http"
+  | "tcp"
+  | "s3"
+  | "smtp"
+  | "other";
+
+/** One dependency's health, as a heartbeat reports it. */
+export interface DependencyReport {
+  status: DependencyStatus;
+  kind?: DependencyKind | (string & {});
+  /** Where it is, without credentials: "db.internal:5432", "https://api.paystack.co". */
+  target?: string;
+  /** How long the check took. */
+  latencyMs?: number;
+  /** Numbers worth graphing: queue depth, consumers, pool usage, memory… */
+  metrics?: Record<string, number>;
+  /** Why it failed, when it did. */
+  error?: string;
+}
+
+/** Outgoing calls to one target since the previous heartbeat (the service map's edges). */
+export interface CallStats {
+  /** Origin or host:port: "https://api.example.com", "payments:8080". */
+  target: string;
+  kind: "http" | (string & {});
+  count: number;
+  /** 5xx answers and calls that failed outright. */
+  errors: number;
+  p50Ms: number;
+  p95Ms: number;
+  maxMs: number;
+}
+
+/** The process itself. */
+export interface RuntimeMetrics {
+  rssMb?: number;
+  heapUsedMb?: number;
+  heapTotalMb?: number;
+  /** CPU used since the previous heartbeat, as a percentage of one core. */
+  cpuPercent?: number;
+  /** Event loop delay (p99) since the previous heartbeat. */
+  eventLoopLagMs?: number;
+  threads?: number;
+}
+
+/** Runs of one background job since the previous heartbeat. */
+export interface JobStats {
+  name: string;
+  count: number;
+  failed: number;
+  p50Ms: number;
+  p95Ms: number;
+  maxMs: number;
+  lastRunAt: string;
+  lastFailedAt?: string;
+}
+
 /** `POST {apiUrl}/heartbeat` */
 export interface HeartbeatPayload {
   service: string;
@@ -57,7 +123,12 @@ export interface HeartbeatPayload {
   /** Milliseconds the service took to run its own health checks. */
   responseTime?: number;
   environment?: MonitoringEnvironment;
-  dependencies?: Record<string, DependencyStatus>;
+  /** A status per dependency, or a full report (servers before 2026-10 take statuses only). */
+  dependencies?: Record<string, DependencyStatus | DependencyReport>;
+  /** Outgoing calls by target since the previous heartbeat. */
+  calls?: CallStats[];
+  runtime?: RuntimeMetrics;
+  jobs?: JobStats[];
   /** When the heartbeat was produced. Informational; the server stamps receipt. */
   timestamp?: string;
 }

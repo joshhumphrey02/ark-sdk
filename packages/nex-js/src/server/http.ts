@@ -19,7 +19,7 @@
  *   Elysia, Hono, Next.js route handlers).
  */
 
-import type { MonitoringEventType } from "./types";
+import type { MonitoringEventType } from "../shared/types";
 
 export type HttpInstrumentationOptions = {
   /** Map a request to a low-cardinality route. Default: framework route when known, else the path with ids masked. */

@@ -9,7 +9,7 @@ import {
   redact,
   redactBounded,
   redactString,
-} from "../packages/monitoring/dist/index.js";
+} from "../packages/nex-js/dist/index.js";
 import { TOKEN, captureLogger, fakeApi, json, makeClient, sleep } from "./monitoringHelpers.mjs";
 
 /**
@@ -26,15 +26,16 @@ test("missing configuration fails at startup, listing every problem", () => {
   delete process.env.MONITORING_API_URL;
   delete process.env.MONITORING_TOKEN;
   delete process.env.MONITORING_SERVICE;
+  for (const key of ["NEX_API_URL", "NEX_TOKEN", "NEX_SERVICE"]) delete process.env[key];
   try {
     assert.throws(
       () => createMonitoring({}),
       (error) => {
         assert.ok(error instanceof MonitoringConfigError);
         assert.equal(error.problems.length, 3);
-        assert.match(error.message, /MONITORING_URL/);
-        assert.match(error.message, /MONITORING_TOKEN/);
-        assert.match(error.message, /MONITORING_SERVICE/);
+        assert.match(error.message, /NEX_API_URL/);
+        assert.match(error.message, /NEX_TOKEN/);
+        assert.match(error.message, /NEX_SERVICE/);
         return true;
       },
     );
@@ -87,6 +88,20 @@ test("apiUrl wins over the older endpoint, and both are validated", () => {
 test("MONITORING_API_URL configures the SDK from the environment", async () => {
   const saved = { ...process.env };
   Object.assign(process.env, { MONITORING_API_URL: "https://ops.example.com/api/v1/monitoring", MONITORING_TOKEN: TOKEN, MONITORING_SERVICE: "api" });
+  delete process.env.MONITORING_URL;
+  try {
+    const api = fakeApi();
+    const monitoring = createMonitoring({ fetch: api.fetch, logger: null });
+    await monitoring.heartbeat();
+    assert.equal(api.calls[0].url, "https://ops.example.com/api/v1/monitoring/heartbeat");
+  } finally {
+    process.env = saved;
+  }
+});
+
+test("NEX_* variables configure the SDK from the environment", async () => {
+  const saved = { ...process.env };
+  Object.assign(process.env, { NEX_API_URL: "https://ops.example.com/api/v1/monitoring", NEX_TOKEN: TOKEN, NEX_SERVICE: "api" });
   delete process.env.MONITORING_URL;
   try {
     const api = fakeApi();
@@ -192,7 +207,7 @@ test("dependencies are optional, accept booleans, and drive the derived status",
   const monitoring = makeClient(api);
 
   await monitoring.heartbeat({ dependencies: { database: "healthy", redis: true, storage: false } });
-  assert.deepEqual(api.calls[0].body.dependencies, { database: "healthy", redis: "healthy", storage: "down" });
+  assert.deepEqual(api.calls[0].body.dependencies, { database: { status: "healthy" }, redis: { status: "healthy" }, storage: { status: "down" } });
   assert.equal(api.calls[0].body.status, "degraded");
 
   await monitoring.heartbeat({ status: "unhealthy", dependencies: { database: "healthy" } });
@@ -217,7 +232,11 @@ test("configured checks run per heartbeat; failures and hangs report down", asyn
   });
   await monitoring.heartbeat();
   const body = api.calls[0].body;
-  assert.deepEqual(body.dependencies, { database: "healthy", redis: "down", storage: "down", queue: "degraded" });
+  const statuses = Object.fromEntries(Object.entries(body.dependencies).map(([name, d]) => [name, d.status]));
+  assert.deepEqual(statuses, { database: "healthy", redis: "down", storage: "down", queue: "degraded" });
+  assert.equal(body.dependencies.redis.error, "ECONNREFUSED");
+  assert.equal(body.dependencies.storage.error, "No answer within 50ms");
+  for (const d of Object.values(body.dependencies)) assert.equal(typeof d.latencyMs, "number");
   assert.equal(body.status, "degraded");
   assert.equal(typeof body.responseTime, "number");
 });
