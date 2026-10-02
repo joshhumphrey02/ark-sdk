@@ -25,6 +25,14 @@ export type OutgoingEvent = {
   metadata?: Record<string, unknown>;
   service?: string | null;
   timestamp: string;
+  /** The error chain with stack frames (exceptions only). */
+  exception?: import("./stacktrace").ExceptionPayload[];
+  /** False for crashes (uncaught exceptions, unhandled rejections). */
+  handled?: boolean;
+  /** Overrides grouping. */
+  fingerprint?: string[];
+  /** Tags for this event only. */
+  tags?: Record<string, string | number | boolean>;
 };
 
 export interface MonitoringOptions {

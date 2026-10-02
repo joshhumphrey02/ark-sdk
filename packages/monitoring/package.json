@@ -1,7 +1,7 @@
 {
   "name": "@nerdstackgrp/monitoring",
-  "version": "0.1.0",
-  "description": "Nerdstack Monitoring SDK — heartbeats, error reporting, releases and HTTP metrics for Node and Bun services.",
+  "version": "0.2.0",
+  "description": "Nex monitoring SDK — errors with stack frames, breadcrumbs, users and requests, crash reports, heartbeats, releases and HTTP metrics for Node and Bun services.",
   "license": "MIT",
   "author": "Nerdstack",
   "homepage": "https://github.com/joshhumphrey02/ark-sdk/tree/master/packages/monitoring#readme",

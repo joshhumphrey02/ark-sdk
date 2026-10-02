@@ -75,6 +75,29 @@ export interface EventPayload {
   metadata?: JsonObject;
   /** ISO-8601 with offset. */
   timestamp?: string;
+  // --- Context (servers before 2026-10 ignore these) ---
+  /** The error and its causes, outermost first, with stack frames (most recent call first). */
+  exception?: {
+    type: string;
+    value: string;
+    mechanism?: { type: string; handled: boolean };
+    stacktrace?: { frames: { function?: string; filename?: string; lineno?: number; colno?: number; inApp: boolean }[] };
+  }[];
+  /** False when a crash handler caught it rather than the application. */
+  handled?: boolean;
+  breadcrumbs?: { timestamp?: string; type?: string; category?: string; level?: string; message?: string; data?: JsonObject }[];
+  request?: { method?: string; url?: string; route?: string; status?: number; userAgent?: string };
+  user?: { id?: string; username?: string; email?: string };
+  tags?: Record<string, string>;
+  contexts?: JsonObject;
+  /** What was running: "GET /orders/:id", a job name. */
+  transaction?: string;
+  /** OpenTelemetry trace and span, when the application uses OpenTelemetry. */
+  traceId?: string;
+  spanId?: string;
+  /** Overrides grouping: events with the same parts are one issue. */
+  fingerprint?: string[];
+  sdk?: { name: string; version: string };
 }
 
 /** `POST {apiUrl}/releases` */

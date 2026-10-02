@@ -119,9 +119,9 @@ delivered. It never rejects. Concurrent calls share one request.
 ### Automatic heartbeat
 
 ```ts
-monitoring.start();                             // server-suggested interval, else 30s
+monitoring.start();                             // heartbeats, crash reports, breadcrumbs
 monitoring.start({ heartbeatInterval: 15_000 });
-monitoring.start({ captureUnhandled: true });   // also report fatal errors (below)
+monitoring.start({ captureUnhandled: false, breadcrumbs: false }); // heartbeats only
 
 await monitoring.stop();                        // e.g. in your SIGTERM handler
 ```
@@ -148,10 +148,19 @@ try {
 monitoring.captureError("Payment provider declined", { error, metadata: { provider: "paystack" } });
 ```
 
-Each report carries the error's name, message and stack (including up to three
-`cause` levels), plus service, version, environment, timestamp, request ID and
-your metadata. Anything can be passed as `error`, including strings, plain
-objects and `undefined`, without crashing the reporter.
+Each report carries the error chain (the error and up to four `cause`s), each
+with its stack as frames marked as your code or library/runtime code, plus
+service, version, environment, timestamp, request ID and your metadata. Nex
+groups errors into issues by the error type and where your code threw it, so
+"Order 81 not found" and "Order 92 not found" from the same place are one
+issue. Pass `fingerprint: ["checkout", "declined"]` to group differently.
+Anything can be passed as `error`, including strings, plain objects and
+`undefined`, without crashing the reporter.
+
+With every error the SDK also sends what it knows (see
+[What an error carries](#what-an-error-carries)): the user, tags, the
+request being handled, the breadcrumbs that led up to it, the runtime, and
+the OpenTelemetry trace.
 
 Capture methods are synchronous. They queue the event and return `true`, or
 `false` if it was filtered, deduplicated or monitoring is disabled. Events are
@@ -182,6 +191,45 @@ monitoring.captureMessage("Production is unavailable", "critical");
 Any API event type (`startup`, `shutdown`, `dependency_failure`,
 `performance`, `security`, …) can be sent with
 `captureEvent({ type, level, message })`.
+
+## What an error carries
+
+```ts
+monitoring.setUser({ id: user.id, email: user.email }); // Nex counts users per issue
+monitoring.setTag("tenant", tenant.slug);
+monitoring.addBreadcrumb({ category: "payment", message: "Charging card", data: { provider: "paystack" } });
+```
+
+- **User and tags**: `setUser`, `setTag`/`setTags`, or `tags` on one capture.
+  Inside an instrumented request they apply to that request only.
+- **Request**: method, path (never the query string), route and user agent,
+  for requests through `httpMiddleware`, `instrumentHttp` or
+  `wrapFetchHandler`. The event is named after the route
+  (`POST /orders/:id`); name other work with `setTransaction("sync-invoices")`.
+- **Breadcrumbs**: the last 100 things that happened, sent with the next
+  error. `start()` records console output and outgoing `fetch`/`node:http`
+  calls (method, URL without query, status, duration) automatically; add your
+  own with `addBreadcrumb`. Turn the automatic ones off with
+  `start({ breadcrumbs: false })` or `{ breadcrumbs: { console: false } }`.
+- **Runtime**: Node or Bun version and OS.
+- **Trace**: when the application uses OpenTelemetry, the active trace and
+  span ids, so an error links to its request across services. No dependency
+  on OpenTelemetry is added.
+
+Each instrumented request gets its own copy of the user, tags and
+breadcrumbs, so one request's context never reaches another's error. For
+work outside requests (queue jobs, cron), give each run its own:
+
+```ts
+worker.on("job", (job) =>
+  monitoring.withScope(async (scope) => {
+    scope.setTag("job", job.name);
+    await process(job);
+  }),
+);
+```
+
+Everything goes through the same redaction as metadata.
 
 ## Context
 
@@ -267,7 +315,18 @@ Bun.serve({ fetch: monitoring.wrapFetchHandler(app.fetch) });
 export const GET = monitoring.wrapFetchHandler(async (request) => Response.json(await load()));
 ```
 
-Errors thrown by a wrapped handler are reported and then re-thrown unchanged.
+Errors thrown by a wrapped handler are reported once, as the exception
+itself with its request, and then re-thrown unchanged.
+
+**Express error handler:** reports errors your routes pass to `next(err)` or
+throw, with their request, then hands them on. 4xx errors (`err.status < 500`)
+are not reported.
+
+```ts
+app.use(monitoring.httpMiddleware());
+// … your routes …
+app.use(monitoring.errorHandler());
+```
 
 **NestJS** runs on Express or Fastify: call
 `monitoring.instrumentHttp(app.getHttpServer())` after `app.listen()`.
@@ -277,10 +336,11 @@ release. Use `wrapFetchHandler` on the server side.
 
 ## Fatal errors
 
-Reporting fatal errors is opt-in:
+`start()` reports crashes by default. Turn it off with
+`start({ captureUnhandled: false })`, or install it on its own:
 
 ```ts
-monitoring.captureUnhandled();                       // or start({ captureUnhandled: true })
+monitoring.captureUnhandled();
 monitoring.captureUnhandled({ flushTimeout: 2_000 });
 ```
 

@@ -20,7 +20,11 @@ import {
   type NodeHttpServerLike,
   type ServerResponseLike,
 } from "./http";
+import { installConsoleBreadcrumbs, installHttpBreadcrumbs } from "./breadcrumbs";
+import { activeTrace } from "./otel";
 import { installFatalHandlers, type UnhandledOptions } from "./process";
+import { ScopeManager, type Breadcrumb, type MonitoringUser, type RequestInfo, type Scope } from "./scope";
+import { exceptionChain } from "./stacktrace";
 import { boundMetadata, byteLength, redact, redactBounded, truncate } from "./redact";
 import { realClock, Transport, type Clock } from "./transport";
 import type {
@@ -39,8 +43,10 @@ import type {
 } from "./types";
 
 const MAX_BATCH = 25;
-/** Stay under the server's 64KB body limit with room for the envelope. */
-const MAX_BATCH_BYTES = 60_000;
+/** Stay under the server's 1MB events body limit with room for the envelope. */
+const MAX_BATCH_BYTES = 900_000;
+export const SDK_NAME = "@nerdstackgrp/monitoring";
+export const SDK_VERSION = "0.2.0";
 const MESSAGE_LIMIT = 2_000;
 const METADATA_BYTES = 8_000;
 const MAX_DEPENDENCIES = 50;
@@ -88,6 +94,24 @@ export type CaptureOptions = {
   requestId?: string;
   /** Report against another registered service, or `null` for the application as a whole. */
   service?: string | null;
+  /** Tags for this event only, on top of `setTag`. */
+  tags?: Record<string, string | number | boolean>;
+  /** Overrides grouping: events with the same parts are one issue in Nex. */
+  fingerprint?: string[];
+};
+
+export type CaptureExceptionOptions = CaptureOptions & {
+  /** How it was caught, shown in Nex. Default "manual". */
+  mechanism?: string;
+  /** False marks a crash. Default true. */
+  handled?: boolean;
+};
+
+export type BreadcrumbOptions = {
+  /** console.log/info/warn/error/debug. Default true. */
+  console?: boolean;
+  /** Outgoing fetch and node:http requests. Default true. */
+  http?: boolean;
 };
 
 export type CaptureErrorOptions = CaptureOptions & {
@@ -107,8 +131,10 @@ export type HeartbeatOptions = {
 export type StartOptions = {
   /** Default: the `heartbeatInterval` option, else the server's suggestion, else 30s. */
   heartbeatInterval?: number;
-  /** Also install the uncaught-error integration (see `captureUnhandled`). */
+  /** Report crashes (uncaught exceptions, unhandled rejections). Default true; `false` turns it off. */
   captureUnhandled?: boolean | UnhandledOptions;
+  /** Record console output and outgoing HTTP calls as breadcrumbs. Default true. */
+  breadcrumbs?: boolean | BreadcrumbOptions;
 };
 
 export type ReleaseOptions = {
@@ -154,12 +180,17 @@ export class Monitoring {
   #http: HttpMetrics;
   #httpReleases: (() => void)[] = [];
   #removeBeforeExit: (() => void) | null = null;
+  readonly #scopes = new ScopeManager();
+  #uninstallBreadcrumbs: (() => void)[] = [];
+  #contexts: JsonObject | null = null;
 
   constructor(options: MonitoringOptions = {}, clock: Clock = realClock) {
     this.#config = resolveConfig(options);
     this.#clock = clock;
     this.#transport = new Transport(this.#config, clock);
     this.#http = new HttpMetrics((event) => {
+      // Already reported as an exception, with its request: don't send it twice.
+      if (typeof event.error === "object" && event.error !== null && this.#reported.has(event.error)) return;
       this.#capture({
         type: event.type,
         level: event.level,
@@ -208,23 +239,78 @@ export class Monitoring {
     return { ...this.#context };
   }
 
+  /**
+   * Who is affected. Inside an instrumented request it applies to that
+   * request only; elsewhere, to everything reported afterwards. Nex counts
+   * users per issue. `null` clears it.
+   */
+  setUser(user: MonitoringUser | null): void {
+    this.#scopes.current.user = user ? { ...user } : null;
+  }
+
+  /** A searchable label on subsequent events (per request inside one). */
+  setTag(key: string, value: string | number | boolean): void {
+    this.#scopes.current.tags[String(key)] = String(value);
+  }
+
+  setTags(tags: Record<string, string | number | boolean>): void {
+    for (const [key, value] of Object.entries(tags)) this.setTag(key, value);
+  }
+
+  /** Names what is running, e.g. a job: "sync-invoices". Requests are named automatically. */
+  setTransaction(name: string | null): void {
+    this.#scopes.current.transaction = name;
+  }
+
+  /** Leaves a trail entry; the last 100 are sent with the next error. */
+  addBreadcrumb(crumb: Breadcrumb): void {
+    if (!this.#config.enabled) return;
+    try {
+      this.#scopes.current.addBreadcrumb(crumb, this.#clock.now());
+    } catch {
+      // Never throw into the application.
+    }
+  }
+
+  /**
+   * Runs `fn` with its own user, tags and breadcrumbs, e.g. one job of a
+   * worker: `monitoring.withScope(() => processJob(job))`.
+   */
+  withScope<T>(fn: (scope: { setUser: (user: MonitoringUser | null) => void; setTag: (key: string, value: string | number | boolean) => void }) => T): T {
+    return this.#scopes.run((scope) =>
+      fn({
+        setUser: (user) => {
+          scope.user = user ? { ...user } : null;
+        },
+        setTag: (key, value) => {
+          scope.tags[String(key)] = String(value);
+        },
+      }),
+    );
+  }
+
   // --- Capture ---------------------------------------------------------------------
 
   /** Reports a thrown value. Returns whether it was queued (false if disabled, filtered or a duplicate). */
-  captureException(error: unknown, options: CaptureOptions = {}): boolean {
+  captureException(error: unknown, options: CaptureExceptionOptions = {}): boolean {
     if (typeof error === "object" && error !== null) {
       // The same error object caught, reported, re-thrown and caught again
       // (or reaching the uncaught handler) is reported once.
       if (this.#reported.has(error)) return false;
     }
     const normalized = normalizeError(error);
+    const handled = options.handled ?? true;
     const queued = this.#capture({
       type: "exception",
       level: options.level ?? "error",
       message: normalized.message || normalized.name,
       error: normalized,
+      exception: exceptionChain(error, { type: options.mechanism ?? "manual", handled }),
+      handled,
+      fingerprint: options.fingerprint,
       metadata: this.#withRequestId(options),
       service: options.service,
+      tags: options.tags,
       timestamp: new Date(this.#clock.now()).toISOString(),
     });
     if (queued && typeof error === "object" && error !== null) this.#reported.add(error);
@@ -239,8 +325,11 @@ export class Monitoring {
       level: options.level ?? "error",
       message: String(message),
       error: normalized,
+      exception: options.error === undefined ? undefined : exceptionChain(options.error, { type: "manual", handled: true }),
+      fingerprint: options.fingerprint,
       metadata: this.#withRequestId(options),
       service: options.service,
+      tags: options.tags,
       timestamp: new Date(this.#clock.now()).toISOString(),
     });
     if (queued && isErrorLike(options.error) && typeof options.error === "object") this.#reported.add(options.error);
@@ -254,8 +343,10 @@ export class Monitoring {
       type,
       level,
       message: String(message),
+      fingerprint: options.fingerprint,
       metadata: this.#withRequestId(options),
       service: options.service,
+      tags: options.tags,
       timestamp: new Date(this.#clock.now()).toISOString(),
     });
   }
@@ -336,6 +427,11 @@ export class Monitoring {
     if (Object.keys(this.#context).length) metadata.context = this.#context;
     const bounded = boundMetadata(metadata, { keys: this.#config.redactKeys, maxBytes: METADATA_BYTES });
     const service = event.service === null ? undefined : (event.service ?? this.#config.service);
+    const scope = this.#scopes.current;
+    const tags: Record<string, string> = { ...scope.tags };
+    for (const [key, value] of Object.entries(event.tags ?? {})) tags[key] = String(value);
+    const trace = activeTrace();
+    const transaction = scope.transaction ?? (scope.request?.route ? `${scope.request.method ?? ""} ${scope.request.route}`.trim() : undefined);
 
     return {
       type: event.type,
@@ -354,7 +450,49 @@ export class Monitoring {
         : {}),
       ...(bounded && Object.keys(bounded).length ? { metadata: bounded } : {}),
       timestamp: event.timestamp,
+      ...(event.exception?.length ? { exception: event.exception } : {}),
+      ...(event.handled !== undefined ? { handled: event.handled } : {}),
+      ...(event.fingerprint?.length ? { fingerprint: event.fingerprint.map((part) => truncate(String(part), 200)) } : {}),
+      ...(scope.breadcrumbs.length ? { breadcrumbs: this.#cleanBreadcrumbs(scope) } : {}),
+      ...(scope.request ? { request: scope.request } : {}),
+      ...(scope.user ? { user: this.#cleanUser(scope.user) } : {}),
+      ...(Object.keys(tags).length ? { tags: redact(tags, { keys: this.#config.redactKeys }) as Record<string, string> } : {}),
+      ...(transaction ? { transaction: truncate(transaction, 300) } : {}),
+      ...(trace ? trace : {}),
+      contexts: this.#runtimeContexts(),
+      sdk: { name: SDK_NAME, version: SDK_VERSION },
     };
+  }
+
+  #cleanBreadcrumbs(scope: Scope): EventPayload["breadcrumbs"] {
+    return scope.breadcrumbs.map((crumb) => ({
+      ...(crumb.timestamp ? { timestamp: crumb.timestamp } : {}),
+      ...(crumb.type ? { type: crumb.type } : {}),
+      ...(crumb.category ? { category: crumb.category } : {}),
+      ...(crumb.level ? { level: crumb.level } : {}),
+      ...(crumb.message ? { message: redactBounded(crumb.message, 1_000) } : {}),
+      ...(crumb.data ? { data: boundMetadata(crumb.data, { keys: this.#config.redactKeys, maxBytes: 2_000 }) ?? undefined } : {}),
+    }));
+  }
+
+  #cleanUser(user: MonitoringUser): NonNullable<EventPayload["user"]> {
+    return {
+      ...(user.id !== undefined ? { id: truncate(String(user.id), 200) } : {}),
+      ...(user.username ? { username: truncate(user.username, 200) } : {}),
+      ...(user.email ? { email: truncate(user.email, 320) } : {}),
+    };
+  }
+
+  /** Runtime and OS, worked out once. */
+  #runtimeContexts(): JsonObject {
+    if (this.#contexts) return this.#contexts;
+    const proc = (globalThis as { process?: { version?: string; versions?: Record<string, string>; platform?: string; arch?: string } }).process;
+    const bun = proc?.versions?.bun;
+    this.#contexts = {
+      runtime: bun ? { name: "bun", version: bun } : { name: "node", version: proc?.version?.replace(/^v/, "") ?? "unknown" },
+      os: { name: proc?.platform ?? "unknown", arch: proc?.arch ?? "unknown" },
+    };
+    return this.#contexts;
   }
 
   #isDuplicate(payload: EventPayload): boolean {
@@ -390,9 +528,15 @@ export class Monitoring {
       let next = this.#queue[0];
       let size = byteLength(JSON.stringify(next));
       if (size > MAX_BATCH_BYTES) {
-        // One event larger than a request (escaping can inflate a stack):
-        // shed the bulky parts rather than lose the event.
-        next = { ...next, metadata: undefined, error: next.error ? { ...next.error, stack: next.error.stack?.slice(0, 4_000) } : undefined };
+        // One event larger than a request: shed the bulky parts rather than
+        // lose the event.
+        next = {
+          ...next,
+          metadata: undefined,
+          breadcrumbs: undefined,
+          error: next.error ? { ...next.error, stack: next.error.stack?.slice(0, 4_000) } : undefined,
+          exception: next.exception?.map((ex) => ({ ...ex, stacktrace: ex.stacktrace ? { frames: ex.stacktrace.frames.slice(0, 20) } : undefined })),
+        };
         size = byteLength(JSON.stringify(next));
         this.#queue[0] = next;
       }
@@ -540,15 +684,17 @@ export class Monitoring {
   }
 
   /**
-   * Sends a heartbeat now and then on an interval, until `stop()`. Calling it
+   * Sends a heartbeat now and then on an interval, until `stop()`, reports
+   * crashes and records breadcrumbs (both on unless turned off). Calling it
    * again while running does nothing. The timer never keeps the process alive.
    */
   start(options: StartOptions = {}): void {
     if (!this.#config.enabled || this.#running) return;
     this.#running = true;
-    if (options.captureUnhandled) {
+    if (options.captureUnhandled !== false) {
       this.captureUnhandled(typeof options.captureUnhandled === "object" ? options.captureUnhandled : {});
     }
+    if (options.breadcrumbs !== false) this.#installBreadcrumbs(typeof options.breadcrumbs === "object" ? options.breadcrumbs : {});
 
     // Timers are unref'd, so a process that finishes its work exits without
     // waiting for the next batch. Flush once when the event loop empties;
@@ -590,6 +736,7 @@ export class Monitoring {
     this.#uninstallFatal = null;
     this.#removeBeforeExit?.();
     this.#removeBeforeExit = null;
+    for (const uninstall of this.#uninstallBreadcrumbs.splice(0)) uninstall();
     for (const release of this.#httpReleases.splice(0)) release();
     this.#http.flushSummary();
     await this.flush(options.flushTimeout ?? 2_000);
@@ -597,6 +744,26 @@ export class Monitoring {
 
   get running(): boolean {
     return this.#running;
+  }
+
+  #installBreadcrumbs(options: BreadcrumbOptions) {
+    for (const uninstall of this.#uninstallBreadcrumbs.splice(0)) uninstall();
+    const add = (crumb: Breadcrumb) => this.addBreadcrumb(crumb);
+    try {
+      if (options.console !== false) this.#uninstallBreadcrumbs.push(installConsoleBreadcrumbs(add));
+      if (options.http !== false) {
+        const origin = (() => {
+          try {
+            return new URL(this.#config.endpoint).origin;
+          } catch {
+            return null;
+          }
+        })();
+        this.#uninstallBreadcrumbs.push(installHttpBreadcrumbs(add, origin, () => performance.now()));
+      }
+    } catch {
+      // Breadcrumbs are a nicety; never fail start() over them.
+    }
   }
 
   // --- Releases & config ---------------------------------------------------------------
@@ -645,7 +812,7 @@ export class Monitoring {
     const uninstall = installFatalHandlers(
       {
         report: (error, origin) => {
-          this.captureException(error, { level: "critical", metadata: { origin } });
+          this.captureException(error, { level: "critical", metadata: { origin }, mechanism: origin, handled: false });
         },
         flush: (timeoutMs) => this.flush(timeoutMs),
       },
@@ -666,6 +833,9 @@ export class Monitoring {
     const resolved = resolveHttpOptions(options);
     const listener = (req: IncomingMessageLike, res: ServerResponseLike) => {
       try {
+        // The application's own listener runs right after this one, in
+        // this request's scope.
+        this.#scopes.enter(this.#requestScope(req));
         observeNodeRequest(this.#http, resolved, req, res);
       } catch {
         // Instrumentation must never break request handling.
@@ -686,15 +856,61 @@ export class Monitoring {
     const resolved = resolveHttpOptions(options);
     if (this.#config.enabled) this.#httpReleases.push(this.#http.retain(resolved));
     return (req, res, next) => {
-      if (this.#config.enabled) {
-        try {
-          observeNodeRequest(this.#http, resolved, req, res);
-        } catch {
-          // Never break the chain.
-        }
+      if (!this.#config.enabled) return next();
+      try {
+        observeNodeRequest(this.#http, resolved, req, res);
+      } catch {
+        // Never break the chain.
       }
-      next();
+      let scope: Scope | null = null;
+      try {
+        scope = this.#requestScope(req);
+      } catch {
+        // No request scope: errors still report, without request context.
+      }
+      if (scope) this.#scopes.run(() => next(), scope);
+      else next();
     };
+  }
+
+  /**
+   * Express error middleware: reports the error with its request, then
+   * passes it on. Add it after your routes:
+   * `app.use(monitoring.errorHandler())`. 4xx errors (`err.status < 500`)
+   * are not reported.
+   */
+  errorHandler(): (error: unknown, req: IncomingMessageLike, res: ServerResponseLike, next: (error?: unknown) => void) => void {
+    return (error, req, _res, next) => {
+      try {
+        const status = (error as { status?: unknown; statusCode?: unknown } | null)?.status ?? (error as { statusCode?: unknown } | null)?.statusCode;
+        if (!(typeof status === "number" && status < 500)) {
+          const scope = this.#scopes.current;
+          if (!scope.request) scope.request = this.#requestInfo(req);
+          this.captureException(error, { mechanism: "middleware", handled: false });
+        }
+      } catch {
+        // Never break error handling.
+      }
+      next(error);
+    };
+  }
+
+  #requestInfo(req: IncomingMessageLike): RequestInfo {
+    const method = (req.method ?? "GET").toUpperCase();
+    const url = (req.originalUrl ?? req.url ?? "/").replace(/[?#].*$/, "");
+    const agent = req.headers?.["user-agent"];
+    return {
+      method,
+      url: truncate(url, 2_000),
+      route: normalizeRoute(url),
+      ...(typeof agent === "string" ? { userAgent: truncate(agent, 500) } : {}),
+    };
+  }
+
+  #requestScope(req: IncomingMessageLike): Scope {
+    const scope = this.#scopes.current.fork();
+    scope.request = this.#requestInfo(req);
+    return scope;
   }
 
   /**
@@ -715,11 +931,19 @@ export class Monitoring {
       const method = request.method.toUpperCase();
       const url = request.url;
       const route = () => resolved.route?.({ method, url }) ?? normalizeRoute(url);
+      const scope = this.#scopes.current.fork();
+      const agent = request.headers.get("user-agent");
+      scope.request = { method, url: truncate(url.replace(/[?#].*$/, ""), 2_000), route: route(), ...(agent ? { userAgent: truncate(agent, 500) } : {}) };
       try {
-        const response = await handler(request, ...args);
+        const response = await this.#scopes.run(() => handler(request, ...args), scope);
         this.#safeRecord(resolved, { method, route: route(), status: response.status, durationMs: performance.now() - started });
         return response;
       } catch (error) {
+        try {
+          this.#scopes.run(() => this.captureException(error, { mechanism: "fetch-handler", handled: false }), scope);
+        } catch {
+          // Never mask the application's error.
+        }
         this.#safeRecord(resolved, { method, route: route(), status: 500, durationMs: performance.now() - started, error });
         throw error;
       }

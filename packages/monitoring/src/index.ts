@@ -14,9 +14,14 @@
  * ```
  */
 
-export { Monitoring, createMonitoring, deriveStatus } from "./client";
+export { Monitoring, SDK_NAME, SDK_VERSION, createMonitoring, deriveStatus } from "./client";
+export { exceptionChain, parseStack } from "./stacktrace";
+export type { ExceptionPayload, StackFrame } from "./stacktrace";
+export type { Breadcrumb, BreadcrumbLevel, MonitoringUser, RequestInfo } from "./scope";
 export type {
+  BreadcrumbOptions,
   CaptureErrorOptions,
+  CaptureExceptionOptions,
   CaptureOptions,
   HeartbeatOptions,
   MonitoringStats,

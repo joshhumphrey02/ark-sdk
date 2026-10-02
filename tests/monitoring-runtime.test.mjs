@@ -297,10 +297,14 @@ test("wrapFetchHandler times fetch-style handlers and re-throws handler errors",
   await monitoring.stop();
 
   const events = api.events();
-  const crash = events.find((e) => e.type === "error");
-  assert.equal(crash.metadata.route, "/crash");
-  assert.equal(crash.metadata.method, "POST");
+  // Reported once, as the exception itself with its request, not also as a 500.
+  const crash = events.find((e) => e.type === "exception");
+  assert.equal(crash.request.route, "/crash");
+  assert.equal(crash.request.method, "POST");
   assert.equal(crash.error.message, "handler exploded");
+  assert.equal(crash.handled, false);
+  assert.deepEqual(crash.exception[0].mechanism, { type: "fetch-handler", handled: false });
+  assert.equal(events.filter((e) => e.type === "error").length, 0);
   assert.ok(events.some((e) => e.type === "performance" && e.metadata.route === "/slow"));
   const summary = events.find((e) => e.type === "performance" && e.severity === "INFO");
   assert.equal(summary.metadata.requests, 4);

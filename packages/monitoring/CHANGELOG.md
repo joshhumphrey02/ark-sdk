@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.2.0
+
+Errors arrive with everything Nex needs to group them and show what led to
+them. Needs a Nex server from October 2026 to use the new context; older
+servers ignore it and keep working.
+
+### Added
+
+- Errors carry their chain (the error and up to four causes) with stack
+  frames, each marked as application or library/runtime code, and how they
+  were caught (`mechanism`, `handled`). Nex groups issues by these.
+- `setUser`, `setTag`/`setTags`, `setTransaction`, `addBreadcrumb` and
+  `withScope`. Instrumented requests (`httpMiddleware`, `instrumentHttp`,
+  `wrapFetchHandler`) each get their own scope, with the request's method,
+  path, route and user agent attached to their errors.
+- Automatic breadcrumbs from `start()`: console output and outgoing
+  `fetch`/`node:http` calls (from Node's diagnostics channels).
+- `errorHandler()`: Express error middleware that reports 5xx errors with
+  their request.
+- `fingerprint` and `tags` options on captures.
+- OpenTelemetry trace and span ids on events when the application uses
+  OpenTelemetry (no dependency added).
+- Runtime/OS contexts and the SDK name/version on every event.
+
+### Changed
+
+- `start()` now reports crashes (uncaught exceptions, unhandled rejections)
+  by default. Pass `captureUnhandled: false` to opt out. The process still
+  crashes exactly as it would without the SDK.
+- An error thrown by a `wrapFetchHandler` handler is reported once, as the
+  exception with its request, instead of as a generic 500 event.
+- Batches may be up to 900 KB (the events endpoint now accepts 1 MB).
+
 ## 0.1.0
 
 First release of the Nerdstack Monitoring SDK for Node.js and Bun.
