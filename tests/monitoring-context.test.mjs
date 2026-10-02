@@ -41,6 +41,7 @@ test("exceptions carry frames, their causes and how they were caught", async () 
   assert.deepEqual(event.fingerprint, ["orders", "save"]);
   assert.equal(event.sdk.name, "@nerdstackgrp/monitoring");
   assert.ok(["node", "bun"].includes(event.contexts.runtime.name));
+  assert.equal(event.release, "2.4.1", "the version is the event's release");
   // Older servers still get the flat error.
   assert.equal(event.error.message, "failed to save order");
 });

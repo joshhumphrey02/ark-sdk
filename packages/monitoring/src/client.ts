@@ -439,6 +439,8 @@ export class Monitoring {
       message: redactBounded(event.message || event.type, MESSAGE_LIMIT),
       ...(service ? { service } : {}),
       ...(this.#config.environment ? { environment: this.#config.environment } : {}),
+      // Nex tracks which releases an issue happened in.
+      ...(this.#config.version ? { release: truncate(this.#config.version, 64) } : {}),
       ...(event.error
         ? {
             error: {
