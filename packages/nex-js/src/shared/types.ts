@@ -111,6 +111,24 @@ export interface JobStats {
   lastFailedAt?: string;
 }
 
+/** Incoming requests the service handled since the previous heartbeat. */
+export interface RequestStats {
+  count: number;
+  errors: number;
+  p50Ms: number;
+  p95Ms: number;
+  maxMs: number;
+  windowSeconds: number;
+}
+
+/** A custom metric: the last value of a gauge, or a counter's total since the previous heartbeat. */
+export interface CustomMetric {
+  name: string;
+  type: "gauge" | "counter";
+  value: number;
+  unit?: string;
+}
+
 /** `POST {apiUrl}/heartbeat` */
 export interface HeartbeatPayload {
   service: string;
@@ -129,6 +147,8 @@ export interface HeartbeatPayload {
   calls?: CallStats[];
   runtime?: RuntimeMetrics;
   jobs?: JobStats[];
+  requests?: RequestStats;
+  metrics?: CustomMetric[];
   /** When the heartbeat was produced. Informational; the server stamps receipt. */
   timestamp?: string;
 }

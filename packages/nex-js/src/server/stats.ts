@@ -7,7 +7,7 @@
 
 import { monitorEventLoopDelay, type IntervalHistogram } from "node:perf_hooks";
 import { truncate } from "../shared/redact";
-import type { CallStats, JobStats, RuntimeMetrics } from "../shared/types";
+import type { CallStats, CustomMetric, JobStats, RequestStats, RuntimeMetrics } from "../shared/types";
 
 /** Durations kept per key for percentiles; beyond this, a reservoir sample. */
 const SAMPLE_SIZE = 256;
@@ -182,5 +182,53 @@ export class RuntimeSampler {
       // Vitals are best-effort.
     }
     return metrics;
+  }
+}
+
+/** Incoming requests in the window, for the heartbeat's `requests`. */
+export class RequestRecorder {
+  #durations = new Durations();
+  #since: number;
+
+  constructor(private readonly now: () => number) {
+    this.#since = now();
+  }
+
+  record(durationMs: number, failed: boolean) {
+    this.#durations.add(durationMs, failed);
+  }
+
+  take(): RequestStats | null {
+    const d = this.#durations;
+    const now = this.now();
+    const windowSeconds = Math.max(1, Math.round((now - this.#since) / 1000));
+    this.#since = now;
+    this.#durations = new Durations();
+    if (d.count === 0) return { count: 0, errors: 0, p50Ms: 0, p95Ms: 0, maxMs: 0, windowSeconds };
+    return { count: d.count, errors: d.errors, p50Ms: d.percentile(50), p95Ms: d.percentile(95), maxMs: Math.round(d.max), windowSeconds };
+  }
+}
+
+const METRIC_NAME = /^[A-Za-z0-9_.:/-]{1,100}$/;
+const MAX_METRICS = 100;
+
+/** Custom metrics between heartbeats: a gauge keeps its last value, a counter its sum. */
+export class MetricRecorder {
+  #values = new Map<string, CustomMetric>();
+
+  record(name: string, value: number, type: "gauge" | "counter", unit?: string): boolean {
+    if (!METRIC_NAME.test(name) || !Number.isFinite(value)) return false;
+    const existing = this.#values.get(name);
+    if (!existing && this.#values.size >= MAX_METRICS) return false;
+    if (existing && existing.type === "counter" && type === "counter") existing.value += value;
+    else this.#values.set(name, { name, type, value, ...(unit ? { unit: truncate(unit, 20) } : {}) });
+    return true;
+  }
+
+  take(): CustomMetric[] {
+    // Gauges stay current until changed; counters start again from zero.
+    const out = [...this.#values.values()].map((m) => ({ ...m }));
+    for (const [name, metric] of this.#values) if (metric.type === "counter") this.#values.delete(name);
+    return out;
   }
 }

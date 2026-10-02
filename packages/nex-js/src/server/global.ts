@@ -13,7 +13,8 @@
  * share one client, one buffer and one heartbeat.
  */
 
-import { Monitoring, type CaptureExceptionOptions, type CaptureOptions, type JobOptions, type StartOptions } from "./client";
+import { Monitoring, type CaptureExceptionOptions, type CaptureOptions, type JobOptions, type SpanOptions, type StartOptions } from "./client";
+import type { Span } from "../shared/trace";
 import type { MonitoringOptions } from "./config";
 import type { Breadcrumb, MonitoringUser } from "./scope";
 import type { MonitoringLevel } from "../shared/types";
@@ -71,6 +72,25 @@ export function addBreadcrumb(crumb: Breadcrumb): void {
 export async function job<T>(name: string, fn: () => T | Promise<T>, options?: JobOptions): Promise<T | undefined> {
   const client = getClient();
   return client ? client.job(name, fn, options) : fn();
+}
+
+/** Runs `fn` as a span of the current trace; without a client it just runs `fn`. */
+export function trace<T>(name: string, fn: (span: Span | null) => T, options?: SpanOptions): T {
+  const client = getClient();
+  return client ? client.trace(name, fn, options) : fn(null);
+}
+
+/** A custom metric for the next heartbeat (see `Monitoring.metric`). */
+export function metric(name: string, value: number, options?: { type?: "gauge" | "counter"; unit?: string }): boolean {
+  return getClient()?.metric(name, value, options) ?? false;
+}
+
+export function increment(name: string, by?: number): boolean {
+  return getClient()?.increment(name, by) ?? false;
+}
+
+export function gauge(name: string, value: number, unit?: string): boolean {
+  return getClient()?.gauge(name, value, unit) ?? false;
 }
 
 /** For Next.js `instrumentation.ts`: `export const onRequestError = nex.captureRequestError;` */

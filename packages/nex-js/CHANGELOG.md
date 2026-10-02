@@ -27,7 +27,14 @@ fall back to plain dependency statuses by themselves.
   - memory, CPU and event-loop delay with each heartbeat;
   - `job(name, fn)`: scoped, counted and timed background work;
   - `captureRequestError()` for Next.js `onRequestError`.
-- `NEX_API_URL`, `NEX_TOKEN`, `NEX_SERVICE`, `NEX_ENVIRONMENT`, `NEX_ENABLED`.
+- Distributed tracing: request, outgoing-call and job spans, W3C
+  `traceparent` in and out, `trace()`, `startSpan()`, `traceHeaders()`,
+  `tracesSampleRate` (default 0.1); browsers trace requests to their own
+  APIs. Errors link to their trace.
+- Heartbeats carry an incoming-request summary and custom metrics
+  (`metric()`, `increment()`, `gauge()`) for Nex's graphs and alert rules.
+- `NEX_API_URL`, `NEX_TOKEN`, `NEX_SERVICE`, `NEX_ENVIRONMENT`, `NEX_ENABLED`,
+  `NEX_TRACES_SAMPLE_RATE`.
 - Stack traces from Firefox and Safari.
 
 ### Changed

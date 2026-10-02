@@ -231,3 +231,37 @@ test("user agents and elements are described without anything typed", () => {
   const input = { tagName: "INPUT", id: "", className: "", textContent: "", value: "4111 1111 1111 1111", getAttribute: (name) => ({ name: "card" })[name] ?? null };
   assert.equal(describeElement(input), 'input[name="card"]');
 });
+
+test("requests to the page's own API carry traceparent and become spans; third parties don't", async () => {
+  const w = fakeWindow("https://shop.example.com/cart");
+  const seen = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    seen.push({ url: String(url), traceparent: new Headers(init.headers).get("traceparent") });
+    return new Response("{}", { status: String(url).includes("/fail") ? 502 : 200 });
+  };
+  const api = fakeEndpoint();
+  const client = new BrowserClient({ key: KEY, fetch: api.fetch, tracesSampleRate: 1, tracePropagationTargets: ["https://api.shop.example.com"] }).install();
+  try {
+    await globalThis.fetch("https://shop.example.com/api/cart?id=4");
+    await globalThis.fetch("https://api.shop.example.com/fail");
+    await globalThis.fetch("https://cdn.thirdparty.example/lib.js");
+    assert.match(seen[0].traceparent, /^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/);
+    assert.match(seen[1].traceparent, /^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/);
+    assert.equal(seen[2].traceparent, null, "third parties never get the header");
+    await client.flush();
+    const spansCall = api.calls.find((c) => c.url.includes("/browser/spans?key="));
+    assert.ok(spansCall, "spans go to the browser spans endpoint");
+    const spans = spansCall.body.spans;
+    assert.equal(spans.length, 2);
+    assert.equal(spans[0].name, "GET /api/cart");
+    assert.equal(spans[0].traceId, seen[0].traceparent.split("-")[1]);
+    assert.equal(spans[0].spanId, seen[0].traceparent.split("-")[2], "the server's parent is this span");
+    assert.equal(spans[1].status, "error");
+    assert.ok(!JSON.stringify(spans).includes("id=4"), "no query strings");
+  } finally {
+    client.close();
+    globalThis.fetch = realFetch;
+    w.restore();
+  }
+});

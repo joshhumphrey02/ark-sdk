@@ -20,6 +20,7 @@ import { isErrorLike, normalizeError } from "../shared/errors";
 import { activeTrace } from "../shared/otel";
 import { boundMetadata, byteLength, redact, redactBounded, truncate } from "../shared/redact";
 import { exceptionChain, type InAppTest } from "../shared/stacktrace";
+import { sample, shouldPropagate, Span, type SpanPayload } from "../shared/trace";
 import type { Breadcrumb, MonitoringUser } from "../shared/context";
 import type { EventPayload, JsonObject, MonitoringLevel, MonitoringSeverity } from "../shared/types";
 
@@ -69,6 +70,17 @@ export type BrowserOptions = {
   beforeSend?: (event: EventPayload) => EventPayload | null;
   /** Errors reported per page load, at most. Default 100. */
   maxEventsPerPage?: number;
+  /**
+   * Share of requests to your APIs traced, 0..1. Default 0.1. A traced
+   * request carries `traceparent`, so your services continue the same trace.
+   */
+  tracesSampleRate?: number;
+  /**
+   * Where else to send `traceparent` besides this page's origin, e.g.
+   * `["https://api.shop.example.com"]`. Those servers must allow the header
+   * in CORS (`Access-Control-Allow-Headers: traceparent`).
+   */
+  tracePropagationTargets?: (string | RegExp)[];
   /** Turn individual integrations off. All default true. */
   integrations?: { errors?: boolean; console?: boolean; fetch?: boolean; xhr?: boolean; navigation?: boolean; clicks?: boolean };
   /** Log what the SDK does to the console. */
@@ -130,6 +142,9 @@ export class BrowserClient {
   #reported = new WeakSet<object>();
   #uninstall: (() => void)[] = [];
   #transaction: string | null = null;
+  #spans: SpanPayload[] = [];
+  #spanTimer: ReturnType<typeof setTimeout> | null = null;
+  readonly #spansEndpoint: string;
 
   constructor(options: BrowserOptions = {}) {
     this.#options = options;
@@ -142,6 +157,7 @@ export class BrowserClient {
     this.#enabled = options.enabled !== false && problems.length === 0;
     if (options.enabled !== false && problems.length) console.warn(`[nex] Not reporting: ${problems.join("; ")}.`);
     this.#endpoint = `${apiUrl}/browser/events?key=${encodeURIComponent(key)}`;
+    this.#spansEndpoint = `${apiUrl}/browser/spans?key=${encodeURIComponent(key)}`;
     this.#ignore = [...DEFAULT_IGNORE, ...(options.ignoreErrors ?? [])];
     const appOrigins = options.appOrigins ?? [];
     this.#inApp = (filename) => {
@@ -162,7 +178,8 @@ export class BrowserClient {
     const on = { errors: true, console: true, fetch: true, xhr: true, navigation: true, clicks: true, ...this.#options.integrations };
     const add = (crumb: Breadcrumb) => this.addBreadcrumb(crumb);
     const apiOrigin = this.#endpoint.replace(/^(https?:\/\/[^/]+).*$/, "$1");
-    const skip = (url: string) => url.startsWith(apiOrigin) && url.includes("/browser/events");
+    const skip = (url: string) => url.startsWith(apiOrigin) && url.includes("/browser/");
+    const trace = (method: string, url: string) => this.#outgoingSpan(method, url);
     try {
       if (on.errors) {
         this.#uninstall.push(
@@ -175,8 +192,8 @@ export class BrowserClient {
         );
       }
       if (on.console) this.#uninstall.push(installConsole(add));
-      if (on.fetch) this.#uninstall.push(installFetch(add, skip));
-      if (on.xhr) this.#uninstall.push(installXhr(add, skip));
+      if (on.fetch) this.#uninstall.push(installFetch(add, skip, trace));
+      if (on.xhr) this.#uninstall.push(installXhr(add, skip, trace));
       if (on.navigation) this.#uninstall.push(installNavigation(add, () => {}));
       if (on.clicks) this.#uninstall.push(installClicks(add));
       this.#installFlushOnHide();
@@ -354,6 +371,55 @@ export class BrowserClient {
     };
   }
 
+  // --- Traces -----------------------------------------------------------------------------
+
+  /** A request to one of your APIs: a client span, and the header that continues it. */
+  #outgoingSpan(method: string, url: string) {
+    if (this.#stopped) return null;
+    const page = location();
+    if (!shouldPropagate(url, page?.origin ?? null, this.#options.tracePropagationTargets ?? [])) return null;
+    const span = new Span({
+      name: `${method} ${url.replace(/^https?:\/\/[^/]+/, "") || "/"}`,
+      kind: "client",
+      parent: null,
+      sampled: sample(this.#options.tracesSampleRate ?? 0.1, null),
+      onEnd: (_span, payload) => this.#queueSpan(payload),
+    });
+    span.setAttribute("http.method", method).setAttribute("http.url", url);
+    if (page) span.setAttribute("page.url", pageUrl(page.href));
+    return {
+      traceparent: span.traceparent,
+      finish: (status: number | undefined, error?: unknown) => {
+        if (status !== undefined) span.setAttribute("http.status_code", status);
+        if (error || (status !== undefined && status >= 500)) span.setStatus("error");
+        span.end();
+      },
+    };
+  }
+
+  #queueSpan(payload: SpanPayload) {
+    this.#spans.push(payload);
+    if (this.#spans.length > 200) this.#spans.splice(0, this.#spans.length - 200);
+    if (this.#spanTimer) return;
+    this.#spanTimer = setTimeout(() => {
+      this.#spanTimer = null;
+      void this.#sendSpans();
+    }, 5_000);
+  }
+
+  async #sendSpans(): Promise<void> {
+    if (!this.#spans.length || this.#stopped) return;
+    const batch = this.#spans.splice(0, 100);
+    const doFetch = this.#options.fetch ?? (globalThis as { fetch?: typeof fetch }).fetch;
+    const body = JSON.stringify({ spans: batch });
+    try {
+      // Through the original fetch would be traced itself; the endpoint is skipped by path.
+      await doFetch?.(this.#spansEndpoint, { method: "POST", body, headers: { "content-type": "text/plain;charset=UTF-8" }, keepalive: byteLength(body) < KEEPALIVE_BYTES, credentials: "omit" });
+    } catch {
+      // Spans are best-effort.
+    }
+  }
+
   // --- Delivery ---------------------------------------------------------------------------
 
   #schedule(delay: number) {
@@ -369,6 +435,11 @@ export class BrowserClient {
 
   /** Sends what is queued. Resolves when done (or given up for now). */
   async flush(): Promise<void> {
+    if (this.#spanTimer) {
+      clearTimeout(this.#spanTimer);
+      this.#spanTimer = null;
+    }
+    await this.#sendSpans();
     if (this.#sending || !this.#queue.length || this.#stopped) return;
     if (Date.now() < this.#pausedUntil) return this.#schedule(0);
     this.#sending = true;

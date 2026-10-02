@@ -15,7 +15,9 @@
  */
 
 export { Monitoring, SDK_NAME, SDK_VERSION, createMonitoring, deriveStatus } from "./client";
-export { init, getClient, captureException, captureMessage, captureRequestError, setUser, setTag, addBreadcrumb, job, flush, _resetForTesting } from "./global";
+export { init, getClient, captureException, captureMessage, captureRequestError, setUser, setTag, addBreadcrumb, job, trace, metric, increment, gauge, flush, _resetForTesting } from "./global";
+export { Span, formatTraceparent, parseTraceparent } from "../shared/trace";
+export type { SpanAttributes, SpanKind, SpanPayload, SpanStatus, TraceContext } from "../shared/trace";
 export type { InitOptions } from "./global";
 export * as checks from "./checks";
 export type { DependencyCheckDefinition, DependencyResult } from "./checks";
@@ -30,6 +32,7 @@ export type {
   HeartbeatOptions,
   JobOptions,
   MonitoringStats,
+  SpanOptions,
   ReleaseOptions,
   StartOptions,
 } from "./client";
@@ -47,6 +50,7 @@ export type {
   ApiErrorBody,
   ApplicationConfigResponse,
   CallStats,
+  CustomMetric,
   DependencyKind,
   DependencyReport,
   DependencyStatus,
@@ -64,5 +68,6 @@ export type {
   MonitoringStatus,
   ReleasePayload,
   ReleaseResponse,
+  RequestStats,
   RuntimeMetrics,
 } from "../shared/types";

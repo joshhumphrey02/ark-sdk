@@ -98,6 +98,8 @@ export function normalizeRoute(url: string): string {
 type RouteStats = { method: string; route: string; count: number; errors: number; totalMs: number; maxMs: number };
 
 export class HttpMetrics {
+  /** Sees every recorded request (the heartbeat's request summary). */
+  observe: ((observation: HttpObservation) => void) | null = null;
   private stats = new Map<string, RouteStats>();
   private lastEvent = new Map<string, number>();
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -114,6 +116,7 @@ export class HttpMetrics {
   }
 
   record(options: ResolvedHttpOptions, observation: HttpObservation) {
+    this.observe?.(observation);
     const key = `${observation.method} ${observation.route}`;
     let entry = this.stats.get(key);
     if (!entry) {

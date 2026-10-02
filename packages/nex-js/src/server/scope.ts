@@ -9,6 +9,7 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { Breadcrumb, MonitoringUser, RequestInfo } from "../shared/context";
+import type { Span } from "../shared/trace";
 
 export type { Breadcrumb, BreadcrumbLevel, MonitoringUser, RequestInfo } from "../shared/context";
 
@@ -20,6 +21,8 @@ export class Scope {
   breadcrumbs: Breadcrumb[] = [];
   request: RequestInfo | null = null;
   transaction: string | null = null;
+  /** The span work in this scope belongs to: new spans are its children. */
+  span: Span | null = null;
 
   /** A copy for a request: same user and tags, its own breadcrumbs. */
   fork(): Scope {
@@ -27,6 +30,7 @@ export class Scope {
     scope.user = this.user;
     scope.tags = { ...this.tags };
     scope.breadcrumbs = this.breadcrumbs.slice(-20);
+    scope.span = this.span;
     return scope;
   }
 

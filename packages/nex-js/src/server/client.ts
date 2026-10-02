@@ -22,7 +22,8 @@ import {
 } from "./http";
 import { callBreadcrumb, installConsoleBreadcrumbs, installHttpObserver } from "./breadcrumbs";
 import { cleanTarget, type DependencyResult } from "./checks";
-import { CallRecorder, JobRecorder, RuntimeSampler } from "./stats";
+import { CallRecorder, JobRecorder, MetricRecorder, RequestRecorder, RuntimeSampler } from "./stats";
+import { parseTraceparent, sample, Span, type SpanAttributes, type SpanKind, type SpanPayload } from "../shared/trace";
 import { activeTrace } from "../shared/otel";
 import { installFatalHandlers, type UnhandledOptions } from "./process";
 import { ScopeManager, type Breadcrumb, type MonitoringUser, type RequestInfo, type Scope } from "./scope";
@@ -54,6 +55,9 @@ const MESSAGE_LIMIT = 2_000;
 const METADATA_BYTES = 8_000;
 const MAX_DEPENDENCIES = 50;
 const DEFAULT_HEARTBEAT_MS = 30_000;
+const MAX_SPAN_BATCH = 500;
+const MAX_BUFFERED_SPANS = 5_000;
+const SPAN_FLUSH_MS = 5_000;
 const RETRY_BUFFERED_MS = 15_000;
 
 const SEVERITY: Record<MonitoringLevel, MonitoringSeverity> = {
@@ -176,6 +180,11 @@ export type StartOptions = {
   runtimeMetrics?: boolean;
 };
 
+export type SpanOptions = {
+  kind?: SpanKind;
+  attributes?: SpanAttributes;
+};
+
 export type JobOptions = {
   /** Tags on errors from this run. */
   tags?: Record<string, string | number | boolean>;
@@ -231,6 +240,11 @@ export class Monitoring {
   #contexts: JsonObject | null = null;
   readonly #calls = new CallRecorder();
   readonly #jobs = new JobRecorder();
+  readonly #metrics = new MetricRecorder();
+  readonly #requests: RequestRecorder;
+  #spans: SpanPayload[] = [];
+  #spanTimer: ReturnType<typeof setTimeout> | null = null;
+  #spanDrain: Promise<void> | null = null;
   #runtime: RuntimeSampler | null = null;
   /** Set when the server took only plain dependency statuses (before 2026-10). */
   #legacyHeartbeat = false;
@@ -239,6 +253,7 @@ export class Monitoring {
     this.#config = resolveConfig(options);
     this.#clock = clock;
     this.#transport = new Transport(this.#config, clock);
+    this.#requests = new RequestRecorder(() => this.#clock.now());
     this.#http = new HttpMetrics((event) => {
       // Already reported as an exception, with its request: don't send it twice.
       if (typeof event.error === "object" && event.error !== null && this.#reported.has(event.error)) return;
@@ -251,6 +266,7 @@ export class Monitoring {
         timestamp: new Date(this.#clock.now()).toISOString(),
       });
     }, () => this.#clock.now());
+    this.#http.observe = (observation) => this.#requests.record(observation.durationMs, observation.status >= 500 || observation.error !== undefined);
   }
 
   get enabled(): boolean {
@@ -481,7 +497,7 @@ export class Monitoring {
     const scope = this.#scopes.current;
     const tags: Record<string, string> = { ...scope.tags };
     for (const [key, value] of Object.entries(event.tags ?? {})) tags[key] = String(value);
-    const trace = activeTrace();
+    const trace = activeTrace() ?? (scope.span ? { traceId: scope.span.traceId, spanId: scope.span.spanId } : null);
     const transaction = scope.transaction ?? (scope.request?.route ? `${scope.request.method ?? ""} ${scope.request.route}`.trim() : undefined);
 
     return {
@@ -651,7 +667,7 @@ export class Monitoring {
       timer = setTimeout(() => resolve(false), timeoutMs);
       unref(timer);
     });
-    const done = await Promise.race([this.#drain().then(() => true as const), timeout]);
+    const done = await Promise.race([Promise.all([this.#drain(), this.#drainSpans()]).then(() => true as const), timeout]);
     clearTimeout(timer);
     return done && this.#queue.length === 0;
   }
@@ -718,6 +734,9 @@ export class Monitoring {
     const calls = this.#running ? this.#calls.take() : [];
     const jobs = this.#jobs.take();
     const runtime = this.#runtime?.take();
+    // Only services whose requests are instrumented have a request summary.
+    const requests = this.#httpReleases.length ? this.#requests.take() : null;
+    const metrics = this.#metrics.take();
 
     const payload: HeartbeatPayload = {
       service: this.#config.service,
@@ -734,6 +753,8 @@ export class Monitoring {
       ...(calls.length ? { calls } : {}),
       ...(jobs.length ? { jobs } : {}),
       ...(runtime && Object.keys(runtime).length ? { runtime } : {}),
+      ...(requests ? { requests } : {}),
+      ...(metrics.length ? { metrics } : {}),
       timestamp: new Date(this.#clock.now()).toISOString(),
     };
 
@@ -751,6 +772,151 @@ export class Monitoring {
     return result.data;
   }
 
+  // --- Traces and metrics -----------------------------------------------------------------
+
+  /** A new span under `parent` (a new trace without one), sampled at `tracesSampleRate`. */
+  #newSpan(name: string, kind: SpanKind, parent: Span | null, remote: ReturnType<typeof parseTraceparent> = null): Span {
+    const context = parent?.context ?? remote;
+    return new Span({
+      name,
+      kind,
+      parent: context,
+      sampled: this.#config.enabled && sample(this.#config.tracesSampleRate, context),
+      onEnd: (_span, payload) => this.#queueSpan(payload),
+    });
+  }
+
+  /**
+   * Starts a span under the current one (or a new trace). End it yourself;
+   * for a function, `trace()` is simpler.
+   */
+  startSpan(name: string, options: SpanOptions = {}): Span {
+    const span = this.#newSpan(name, options.kind ?? "internal", this.#scopes.current.span);
+    for (const [key, value] of Object.entries(options.attributes ?? {})) span.setAttribute(key, value);
+    return span;
+  }
+
+  /**
+   * Runs `fn` as a span of the current trace: a database query, a call to a
+   * model, a step of a job. It fails (and re-throws) with `fn`.
+   *
+   * ```ts
+   * const rows = await monitoring.trace("SELECT orders", () => db.query(sql), { kind: "client", attributes: { "db.system": "postgresql" } });
+   * ```
+   */
+  trace<T>(name: string, fn: (span: Span) => T, options: SpanOptions = {}): T {
+    return this.#scopes.run((scope) => {
+      const span = this.startSpan(name, options);
+      scope.span = span;
+      try {
+        const result = fn(span);
+        if (result && typeof (result as { then?: unknown }).then === "function") {
+          return (result as unknown as Promise<unknown>).then(
+            (value) => {
+              span.end();
+              return value;
+            },
+            (error: unknown) => {
+              span.setStatus("error").end();
+              throw error;
+            },
+          ) as T;
+        }
+        span.end();
+        return result;
+      } catch (error) {
+        span.setStatus("error").end();
+        throw error;
+      }
+    });
+  }
+
+  /** The current trace, for passing on by hand: `{ traceparent }` as a header. */
+  traceHeaders(): Record<string, string> {
+    const span = this.#scopes.current.span;
+    return span ? { traceparent: span.traceparent } : {};
+  }
+
+  /**
+   * A custom metric, sent with the next heartbeat: a `gauge` keeps its last
+   * value (queue length, cache size), a `counter` adds up (orders placed).
+   * Graph it and alert on it in Nex.
+   */
+  metric(name: string, value: number, options: { type?: "gauge" | "counter"; unit?: string } = {}): boolean {
+    if (!this.#config.enabled) return false;
+    return this.#metrics.record(String(name), Number(value), options.type ?? "gauge", options.unit);
+  }
+
+  increment(name: string, by = 1): boolean {
+    return this.metric(name, by, { type: "counter" });
+  }
+
+  gauge(name: string, value: number, unit?: string): boolean {
+    return this.metric(name, value, { type: "gauge", unit });
+  }
+
+  #queueSpan(payload: SpanPayload) {
+    if (!this.#config.enabled || !this.#transport.usable) return;
+    this.#spans.push({ ...payload, service: this.#config.service });
+    if (this.#spans.length > MAX_BUFFERED_SPANS) this.#spans.splice(0, this.#spans.length - MAX_BUFFERED_SPANS);
+    if (this.#spans.length >= MAX_SPAN_BATCH) void this.#drainSpans();
+    else if (!this.#spanTimer) {
+      this.#spanTimer = setTimeout(() => {
+        this.#spanTimer = null;
+        void this.#drainSpans();
+      }, SPAN_FLUSH_MS);
+      unref(this.#spanTimer);
+    }
+  }
+
+  #drainSpans(): Promise<void> {
+    if (this.#spanDrain) return this.#spanDrain;
+    if (this.#spanTimer) {
+      clearTimeout(this.#spanTimer);
+      this.#spanTimer = null;
+    }
+    this.#spanDrain = (async () => {
+      try {
+        while (this.#spans.length && this.#transport.usable) {
+          const batch = this.#spans.splice(0, MAX_SPAN_BATCH);
+          const result = await this.#transport.request("POST", "/spans", { spans: batch }, Math.min(1, this.#config.maxRetries));
+          if (result.ok) continue;
+          // An older server without /spans (404), or a full quota: drop, don't retry forever.
+          if (result.retryable && result.status !== 429) this.#spans.unshift(...batch.slice(0, MAX_BUFFERED_SPANS - this.#spans.length));
+          break;
+        }
+      } catch {
+        // Delivery never throws into the application.
+      } finally {
+        this.#spanDrain = null;
+      }
+    })();
+    return this.#spanDrain;
+  }
+
+  /** A server span for an incoming request, continuing the caller's trace when it sent one. */
+  #serverSpan(method: string, route: string, traceparent: string | null | undefined): Span {
+    const span = this.#newSpan(`${method} ${route}`, "server", null, parseTraceparent(traceparent));
+    span.setAttribute("http.method", method).setAttribute("http.route", route);
+    return span;
+  }
+
+  /** Outgoing calls inside a trace get a client span and carry the trace on. */
+  #outgoingSpan(method: string, url: string) {
+    const parent = this.#scopes.current.span;
+    if (!parent) return null;
+    const span = this.#newSpan(`${method} ${url}`, "client", parent);
+    span.setAttribute("http.method", method).setAttribute("http.url", url);
+    return {
+      traceparent: span.traceparent,
+      finish: (status: number | undefined, error?: unknown) => {
+        if (status !== undefined) span.setAttribute("http.status_code", status);
+        if (error || (status !== undefined && status >= 500)) span.setStatus("error");
+        span.end();
+      },
+    };
+  }
+
   // --- Jobs ------------------------------------------------------------------------------
 
   /**
@@ -766,13 +932,18 @@ export class Monitoring {
     const started = performance.now();
     return this.#scopes.run(async (scope) => {
       scope.transaction = name;
+      const span = this.#newSpan(name, "consumer", scope.span);
+      scope.span = span;
+      span.setAttribute("job.name", name);
       for (const [key, value] of Object.entries(options.tags ?? {})) scope.tags[key] = String(value);
       try {
         const result = await fn();
         this.#recordJob(name, performance.now() - started, false);
+        span.end();
         return result;
       } catch (error) {
         this.#recordJob(name, performance.now() - started, true);
+        span.setStatus("error").end();
         this.captureException(error, { mechanism: "job", handled: false, tags: { job: name } });
         if (options.rethrow === false) return undefined;
         throw error;
@@ -878,6 +1049,7 @@ export class Monitoring {
             },
             origin,
             () => performance.now(),
+            (method, url) => this.#outgoingSpan(method, url),
           ),
         );
       }
@@ -959,7 +1131,7 @@ export class Monitoring {
       try {
         // The application's own listener runs right after this one, in
         // this request's scope.
-        this.#scopes.enter(this.#requestScope(req));
+        this.#scopes.enter(this.#requestScope(req, res));
         observeNodeRequest(this.#http, resolved, req, res);
       } catch {
         // Instrumentation must never break request handling.
@@ -988,7 +1160,7 @@ export class Monitoring {
       }
       let scope: Scope | null = null;
       try {
-        scope = this.#requestScope(req);
+        scope = this.#requestScope(req, res);
       } catch {
         // No request scope: errors still report, without request context.
       }
@@ -1064,9 +1236,24 @@ export class Monitoring {
     };
   }
 
-  #requestScope(req: IncomingMessageLike): Scope {
+  #requestScope(req: IncomingMessageLike, res?: ServerResponseLike): Scope {
     const scope = this.#scopes.current.fork();
     scope.request = this.#requestInfo(req);
+    const header = req.headers?.traceparent;
+    const span = this.#serverSpan(scope.request.method ?? "GET", scope.request.route ?? "/", typeof header === "string" ? header : null);
+    scope.span = span;
+    if (res) {
+      const end = () => {
+        // Express knows the route template once it has routed.
+        const template = typeof req.route?.path === "string" ? `${req.baseUrl ?? ""}${req.route.path}` : null;
+        if (template) span.name = `${scope.request?.method ?? "GET"} ${template}`;
+        span.setAttribute("http.status_code", res.statusCode);
+        if (res.statusCode >= 500) span.setStatus("error");
+        span.end();
+      };
+      res.once("finish", end);
+      res.once("close", end);
+    }
     return scope;
   }
 
@@ -1091,11 +1278,17 @@ export class Monitoring {
       const scope = this.#scopes.current.fork();
       const agent = request.headers.get("user-agent");
       scope.request = { method, url: truncate(url.replace(/[?#].*$/, ""), 2_000), route: route(), ...(agent ? { userAgent: truncate(agent, 500) } : {}) };
+      const span = this.#serverSpan(method, route(), request.headers.get("traceparent"));
+      scope.span = span;
       try {
         const response = await this.#scopes.run(() => handler(request, ...args), scope);
         this.#safeRecord(resolved, { method, route: route(), status: response.status, durationMs: performance.now() - started });
+        span.setAttribute("http.status_code", response.status);
+        if (response.status >= 500) span.setStatus("error");
+        span.end();
         return response;
       } catch (error) {
+        span.setAttribute("http.status_code", 500).setStatus("error").end();
         try {
           this.#scopes.run(() => this.captureException(error, { mechanism: "fetch-handler", handled: false }), scope);
         } catch {
@@ -1140,7 +1333,7 @@ export class Monitoring {
 
 /** The heartbeat as servers before 2026-10 accept it: dependency statuses only. */
 function legacyHeartbeat(payload: HeartbeatPayload): HeartbeatPayload {
-  const { calls: _calls, jobs: _jobs, runtime: _runtime, ...rest } = payload;
+  const { calls: _calls, jobs: _jobs, runtime: _runtime, requests: _requests, metrics: _metrics, ...rest } = payload;
   return {
     ...rest,
     ...(payload.dependencies ? { dependencies: Object.fromEntries(Object.entries(payload.dependencies).map(([name, d]) => [name, statusOf(d)])) } : {}),

@@ -136,7 +136,20 @@ function httpCrumb(method: string, url: string, status: number | undefined, dura
   };
 }
 
-export function installFetch(add: Add, skip: (url: string) => boolean): Uninstall {
+/** Tracing's part in an outgoing request: a header to send, and to hear how it ended. */
+export type OutgoingHooks = { traceparent?: string; finish?: (status: number | undefined, error?: unknown) => void };
+export type OnOutgoingStart = (method: string, url: string) => OutgoingHooks | null;
+
+function startHooks(onStart: OnOutgoingStart | undefined, method: string, url: string): OutgoingHooks | null {
+  if (!onStart) return null;
+  try {
+    return onStart(method, url);
+  } catch {
+    return null;
+  }
+}
+
+export function installFetch(add: Add, skip: (url: string) => boolean, onStart?: OnOutgoingStart): Uninstall {
   const w = win();
   const original = w?.fetch;
   if (!w || typeof original !== "function") return noop;
@@ -148,14 +161,26 @@ export function installFetch(add: Add, skip: (url: string) => boolean): Uninstal
       url = cleanUrl(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
     });
     const started = performance.now();
-    const promise = original.call(this ?? w, input as RequestInfo, init);
-    if (!url || skip(url)) return promise;
+    const ignored = !url || skip(url);
+    const hooks = ignored ? null : startHooks(onStart, method, url);
+    let nextInit = init;
+    if (hooks?.traceparent) {
+      safely(() => {
+        const headers = new Headers(init?.headers ?? (typeof input === "object" && "headers" in input ? input.headers : undefined));
+        headers.set("traceparent", hooks.traceparent!);
+        nextInit = { ...init, headers };
+      });
+    }
+    const promise = original.call(this ?? w, input as RequestInfo, nextInit);
+    if (ignored) return promise;
     return promise.then(
       (response) => {
+        safely(() => hooks?.finish?.(response.status));
         safely(() => add(httpCrumb(method, url, response.status, performance.now() - started)));
         return response;
       },
       (error: unknown) => {
+        safely(() => hooks?.finish?.(undefined, error));
         safely(() => add(httpCrumb(method, url, undefined, performance.now() - started, error)));
         throw error;
       },
@@ -170,7 +195,7 @@ export function installFetch(add: Add, skip: (url: string) => boolean): Uninstal
 const XHR_INFO = Symbol("nex.xhr");
 type XhrInfo = { method: string; url: string; started: number };
 
-export function installXhr(add: Add, skip: (url: string) => boolean): Uninstall {
+export function installXhr(add: Add, skip: (url: string) => boolean, onStart?: OnOutgoingStart): Uninstall {
   const Xhr = win()?.XMLHttpRequest;
   if (!Xhr?.prototype) return noop;
   const proto = Xhr.prototype as XMLHttpRequest & { [XHR_INFO]?: XhrInfo };
@@ -187,9 +212,12 @@ export function installXhr(add: Add, skip: (url: string) => boolean): Uninstall 
       const info = this[XHR_INFO];
       if (!info || skip(info.url)) return;
       info.started = performance.now();
-      this.addEventListener("loadend", () =>
-        safely(() => add(httpCrumb(info.method, info.url, this.status, performance.now() - info.started, this.status === 0 ? "network error" : undefined))),
-      );
+      const hooks = startHooks(onStart, info.method, info.url);
+      if (hooks?.traceparent) this.setRequestHeader("traceparent", hooks.traceparent);
+      this.addEventListener("loadend", () => {
+        safely(() => hooks?.finish?.(this.status === 0 ? undefined : this.status, this.status === 0 ? "network error" : undefined));
+        safely(() => add(httpCrumb(info.method, info.url, this.status, performance.now() - info.started, this.status === 0 ? "network error" : undefined)));
+      });
     });
     return send.call(this, body);
   };

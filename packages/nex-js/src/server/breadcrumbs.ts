@@ -62,7 +62,11 @@ export function installConsoleBreadcrumbs(add: Add): () => void {
   };
 }
 
-type Pending = { method: string; url: string; started: number };
+/** What tracing wants from an outgoing call: a header to send, and to hear when it ends. */
+export type OutgoingHooks = { traceparent?: string; finish?: (status: number | undefined, error?: unknown) => void };
+export type OnOutgoingStart = (method: string, url: string) => OutgoingHooks | null;
+
+type Pending = { method: string; url: string; started: number; hooks: OutgoingHooks | null };
 
 /** One finished outgoing request. `url` has no query string or fragment. */
 export type OutgoingCall = { method: string; url: string; status?: number; durationMs: number; error?: unknown };
@@ -94,14 +98,36 @@ export function callBreadcrumb(call: OutgoingCall): Breadcrumb {
  * diagnostics channels: no monkey-patching, nothing changes for the request.
  * `skipOrigin`: the Nex API's own origin, whose calls are not reported.
  */
-export function installHttpObserver(onCall: (call: OutgoingCall) => void, skipOrigin: string | null, now: () => number): () => void {
+export function installHttpObserver(onCall: (call: OutgoingCall) => void, skipOrigin: string | null, now: () => number, onStart?: OnOutgoingStart): () => void {
   const pending = new WeakMap<object, Pending>();
+  const begin = (method: string, url: string): Pending => {
+    const own = Boolean(skipOrigin && url.startsWith(skipOrigin));
+    let hooks: OutgoingHooks | null = null;
+    try {
+      hooks = own || !onStart ? null : onStart(method, url);
+    } catch {
+      hooks = null;
+    }
+    return { method, url, started: now(), hooks };
+  };
   const finish = (request: object, status: number | undefined, error?: unknown) => {
     const started = pending.get(request);
     if (!started) return;
     pending.delete(request);
     if (skipOrigin && started.url.startsWith(skipOrigin)) return;
+    try {
+      started.hooks?.finish?.(status, error);
+    } catch {
+      // Never break the request.
+    }
     onCall({ method: started.method, url: started.url, status, durationMs: now() - started.started, ...(error ? { error } : {}) });
+  };
+  type NodeRequest = { method?: string; protocol?: string; host?: string; path?: string; headersSent?: boolean; setHeader?: (name: string, value: string) => void };
+  const nodeStart = (request: NodeRequest) => {
+    if (pending.has(request)) return;
+    const entry = begin((request.method ?? "GET").toUpperCase(), cleanUrl(`${request.protocol ?? "http:"}//${request.host ?? ""}${request.path ?? ""}`));
+    if (entry.hooks?.traceparent && !request.headersSent) request.setHeader?.("traceparent", entry.hooks.traceparent);
+    pending.set(request, entry);
   };
 
   const subscriptions: [string, (message: unknown) => void][] = [
@@ -109,8 +135,11 @@ export function installHttpObserver(onCall: (call: OutgoingCall) => void, skipOr
     [
       "undici:request:create",
       (message) => {
-        const request = (message as { request?: { origin?: string; method?: string; path?: string } }).request;
-        if (request) pending.set(request, { method: (request.method ?? "GET").toUpperCase(), url: cleanUrl(`${request.origin ?? ""}${request.path ?? ""}`), started: now() });
+        const request = (message as { request?: { origin?: string; method?: string; path?: string; addHeader?: (name: string, value: string) => void } }).request;
+        if (!request) return;
+        const entry = begin((request.method ?? "GET").toUpperCase(), cleanUrl(`${request.origin ?? ""}${request.path ?? ""}`));
+        if (entry.hooks?.traceparent) request.addHeader?.("traceparent", entry.hooks.traceparent);
+        pending.set(request, entry);
       },
     ],
     [
@@ -127,12 +156,27 @@ export function installHttpObserver(onCall: (call: OutgoingCall) => void, skipOr
         if (request) finish(request, undefined, error ?? "error");
       },
     ],
-    // node:http / node:https clients
+    // node:http / node:https clients. "created" comes before the headers are
+    // sent (so the trace header can still be added); "start" on older Nodes.
+    [
+      "http.client.request.created",
+      (message) => {
+        const request = (message as { request?: NodeRequest }).request;
+        if (request) nodeStart(request);
+      },
+    ],
     [
       "http.client.request.start",
       (message) => {
-        const request = (message as { request?: { method?: string; protocol?: string; host?: string; path?: string } }).request;
-        if (request) pending.set(request, { method: (request.method ?? "GET").toUpperCase(), url: cleanUrl(`${request.protocol ?? "http:"}//${request.host ?? ""}${request.path ?? ""}`), started: now() });
+        const request = (message as { request?: NodeRequest }).request;
+        if (request) nodeStart(request);
+      },
+    ],
+    [
+      "http.client.request.error",
+      (message) => {
+        const { request, error } = message as { request?: object; error?: unknown };
+        if (request) finish(request, undefined, error ?? "error");
       },
     ],
     [
@@ -145,7 +189,7 @@ export function installHttpObserver(onCall: (call: OutgoingCall) => void, skipOr
   ];
 
   // Bun doesn't publish these channels: observe its fetch by wrapping it instead.
-  const uninstallBunFetch = (globalThis as { process?: { versions?: { bun?: string } } }).process?.versions?.bun ? wrapFetch(onCall, skipOrigin, now) : () => {};
+  const uninstallBunFetch = (globalThis as { process?: { versions?: { bun?: string } } }).process?.versions?.bun ? wrapFetch(onCall, skipOrigin, now, onStart) : () => {};
 
   const active: [string, (message: unknown) => void][] = [];
   for (const [name, handler] of subscriptions) {
@@ -176,7 +220,7 @@ export function installHttpObserver(onCall: (call: OutgoingCall) => void, skipOr
 }
 
 /** Times `globalThis.fetch` calls; the response and errors pass through untouched. */
-function wrapFetch(onCall: (call: OutgoingCall) => void, skipOrigin: string | null, now: () => number): () => void {
+function wrapFetch(onCall: (call: OutgoingCall) => void, skipOrigin: string | null, now: () => number, onStart?: OnOutgoingStart): () => void {
   const original = globalThis.fetch;
   if (typeof original !== "function") return () => {};
   const wrapped = Object.assign(
@@ -190,10 +234,27 @@ function wrapFetch(onCall: (call: OutgoingCall) => void, skipOrigin: string | nu
         // Unreadable input: call through unobserved.
       }
       const started = now();
-      const promise = original.call(this, input, init);
-      if (!url || (skipOrigin && url.startsWith(skipOrigin))) return promise;
+      const own = !url || Boolean(skipOrigin && url.startsWith(skipOrigin));
+      let hooks: OutgoingHooks | null = null;
+      let nextInit = init;
+      if (!own && onStart) {
+        try {
+          hooks = onStart(method, url);
+          if (hooks?.traceparent) {
+            const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+            headers.set("traceparent", hooks.traceparent);
+            nextInit = { ...init, headers };
+          }
+        } catch {
+          hooks = null;
+          nextInit = init;
+        }
+      }
+      const promise = original.call(this, input, nextInit);
+      if (own) return promise;
       const report = (status: number | undefined, error?: unknown) => {
         try {
+          hooks?.finish?.(status, error);
           onCall({ method, url, status, durationMs: now() - started, ...(error ? { error } : {}) });
         } catch {
           // Never break the request.

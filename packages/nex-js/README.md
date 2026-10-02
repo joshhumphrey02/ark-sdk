@@ -199,6 +199,47 @@ which, and with the dependencies to show what each one stands on. Calls
 come from Node's diagnostics channels (`fetch` and `node:http`); on Bun,
 from `fetch`. Turn it off with `start({ serviceMap: false })`.
 
+## Traces
+
+Every instrumented request (`httpMiddleware`, `instrumentHttp`,
+`wrapFetchHandler`) is a span; every outgoing `fetch`/`node:http` call made
+while handling it is a child span and carries a W3C `traceparent` header,
+so the next service (on nex-js, nex-py or OpenTelemetry) continues the
+same trace. Jobs are spans too. In Nex, a trace shows as a waterfall across
+services, with the errors raised in it; every error links to its trace.
+
+```ts
+const rows = await nex.trace("SELECT orders", () => db.query(sql), { kind: "client", attributes: { "db.system": "postgresql" } });
+
+const span = monitoring.startSpan("render invoice");
+span.setAttribute("invoice.pages", 12);
+span.end();
+
+await fetch(url, { headers: monitoring.traceHeaders() }); // propagate by hand (e.g. into a queue message)
+```
+
+`tracesSampleRate` (default `0.1`, env `NEX_TRACES_SAMPLE_RATE`) is the
+share of new traces kept. A trace started elsewhere keeps its sampling
+decision, so a trace is recorded whole or not at all. Unsampled requests
+still send `traceparent` (flagged unsampled) and their errors still carry
+the trace id. Spans go in batches to `/spans`, at most every 5 seconds.
+
+## Metrics
+
+Each heartbeat carries a summary of the requests handled since the last
+one (count, errors, p50, p95, max), the service's vitals, and your own
+metrics:
+
+```ts
+nex.increment("orders.placed");          // a counter: summed per heartbeat
+nex.gauge("queue.depth", depth, "jobs"); // a gauge: the last value
+nex.metric("cart.value", total, { type: "gauge", unit: "NGN" });
+```
+
+Nex graphs them per service (request rate, error rate, latency, calls,
+memory, CPU, event loop, jobs, your metrics), and alert rules can watch any
+of them: "p95 above 800 ms for 5 minutes", "queue.depth above 1,000".
+
 ## Runtime vitals and jobs
 
 Heartbeats also carry the process's memory (RSS and heap), CPU and
@@ -494,6 +535,13 @@ nex.init({
 nex.setUser({ id: user.id });
 nex.captureException(error, { tags: { section: "checkout" } });
 ```
+
+**Tracing from the page:** requests to the page's own origin (and to
+`tracePropagationTargets`) carry `traceparent` and are recorded as spans
+(`tracesSampleRate`, default 0.1), so a trace starts at the click and runs
+through your services. Third-party requests are never touched. Other
+origins in `tracePropagationTargets` must allow the header
+(`Access-Control-Allow-Headers: traceparent`).
 
 Delivery is batched, sent as a simple CORS request (no preflight), and
 handed to `sendBeacon` when the tab is hidden or closed, so errors just

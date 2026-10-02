@@ -88,6 +88,13 @@ export interface MonitoringOptions {
   /** How long buffered events wait to be batched. Default 1000ms. */
   flushInterval?: number;
 
+  /**
+   * Share of new traces recorded, 0..1. Default 0.1. A trace another service
+   * started keeps that service's decision, so traces are whole or absent.
+   * Env: `NEX_TRACES_SAMPLE_RATE`.
+   */
+  tracesSampleRate?: number;
+
   /** Dependency checks run for every heartbeat that does not pass its own `dependencies`. */
   checks?: Record<string, DependencyCheck>;
   /** Per-check timeout. Default 2000ms; a check that times out reports `down`. */
@@ -124,6 +131,7 @@ export type ResolvedConfig = {
   flushInterval: number;
   checks: Record<string, DependencyCheck>;
   checkTimeout: number;
+  tracesSampleRate: number;
   redactKeys: Array<string | RegExp>;
   beforeSend: MonitoringOptions["beforeSend"];
   logger: LoggerLike | null;
@@ -221,6 +229,15 @@ function positive(name: string, value: number | undefined, fallback: number, min
   return value;
 }
 
+function sampleRate(value: number | undefined, problems: string[]): number {
+  if (value === undefined) return 0.1;
+  if (!Number.isFinite(value) || value < 0 || value > 1) {
+    problems.push("tracesSampleRate must be a number from 0 to 1");
+    return 0.1;
+  }
+  return value;
+}
+
 export function resolveConfig(options: MonitoringOptions = {}, env: Env = processEnv()): ResolvedConfig {
   const enabled = options.enabled ?? first(env.NEX_ENABLED, env.MONITORING_ENABLED)?.toLowerCase() !== "false";
   const problems: string[] = [];
@@ -262,6 +279,7 @@ export function resolveConfig(options: MonitoringOptions = {}, env: Env = proces
     dedupeWindow: positive("dedupeWindow", options.dedupeWindow, 2_000, 0, problems),
     flushInterval: positive("flushInterval", options.flushInterval, 1_000, 0, problems),
     checks: options.checks ?? {},
+    tracesSampleRate: sampleRate(options.tracesSampleRate ?? (env.NEX_TRACES_SAMPLE_RATE ? Number(env.NEX_TRACES_SAMPLE_RATE) : undefined), problems),
     checkTimeout: positive("checkTimeout", options.checkTimeout, 2_000, 1, problems),
     redactKeys: options.redactKeys ?? [],
     beforeSend: options.beforeSend,
