@@ -2,7 +2,7 @@
 
 ## 0.1.0
 
-First release of Nex for Python (`pip install nex-py`, `import nex_py`),
+First release of Nex for Python (`pip install nex-python`, `import nex_py`),
 with the same API contract and safety rules as `@nerdstackgrp/nex-js`.
 
 - `init()` / `Monitoring`: configuration from options or `NEX_*`

@@ -3,7 +3,7 @@ requires = ["hatchling>=1.26"]
 build-backend = "hatchling.build"
 
 [project]
-name = "nex-py"
+name = "nex-python"
 version = "0.1.0"
 description = "Nex for Python: errors and crashes with full context, dependency health (databases, Redis, RabbitMQ), service maps, runtime and job metrics, and releases."
 readme = "README.md"

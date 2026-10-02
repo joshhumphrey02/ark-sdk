@@ -11,7 +11,7 @@ for Python frameworks and workers. For monitoring with Nex:
 npm install @nerdstackgrp/ark-client   # browser
 npm install @nerdstackgrp/ark-server   # backend
 npm install @nerdstackgrp/nex-js       # Nex monitoring (Node, Bun, browsers)
-pip install nex-py                     # Nex monitoring (Python)
+pip install nex-python                 # Nex monitoring (Python)
 ```
 
 Both ship ESM and CommonJS builds with TypeScript declarations, and have zero

@@ -7,7 +7,7 @@ jobs, and releases. The Python counterpart of
 [`@nerdstackgrp/nex-js`](../nex-js), with the same API and the same rules.
 
 ```sh
-pip install nex-py
+pip install nex-python
 ```
 
 ```python
