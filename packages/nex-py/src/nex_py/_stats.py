@@ -260,10 +260,10 @@ def install_http_observers(on_call: OnCall, skip_origin: str | None, on_start: O
             observe(str(request.url), started, response.status_code, False, request.headers)
             return response
 
-        requests.Session.send = requests_send
+        requests.Session.send = requests_send  # type: ignore[method-assign,unused-ignore]
 
         def undo_requests() -> None:
-            requests.Session.send = original_requests_send
+            requests.Session.send = original_requests_send  # type: ignore[method-assign,unused-ignore]
 
         undo.append(undo_requests)
     except Exception:
