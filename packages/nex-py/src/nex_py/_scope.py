@@ -50,7 +50,7 @@ class Scope:
 
 
 _GLOBAL = Scope()
-_current: contextvars.ContextVar[Scope | None] = contextvars.ContextVar("nerdstack_monitoring_scope", default=None)
+_current: contextvars.ContextVar[Scope | None] = contextvars.ContextVar("nex_py_scope", default=None)
 
 
 def current_scope() -> Scope:

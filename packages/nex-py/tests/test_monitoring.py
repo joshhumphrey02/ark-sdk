@@ -14,9 +14,9 @@ from typing import Any
 import httpx
 import pytest
 
-import nerdstack_monitoring as nm
-from nerdstack_monitoring import Monitoring, MonitoringASGIMiddleware, MonitoringConfigError, MonitoringLogHandler, MonitoringWSGIMiddleware
-from nerdstack_monitoring._scope import reset_global_scope
+import nex_py as nm
+from nex_py import Monitoring, MonitoringASGIMiddleware, MonitoringConfigError, MonitoringLogHandler, MonitoringWSGIMiddleware
+from nex_py._scope import reset_global_scope
 
 TOKEN = "nsk_test_" + "A1b2C3d4E5" * 4 + "xyz"
 
@@ -37,7 +37,7 @@ class FakeApi:
         out: list[dict[str, Any]] = []
         for path, body in self.calls:
             if path.endswith("/events"):
-                out.extend(body["events"] if "events" in body else [body])
+                out.extend(body.get("events", [body]))
         return out
 
 
@@ -118,7 +118,7 @@ def test_exceptions_carry_their_chain_frames_and_context() -> None:
     top = event["exception"][0]["stacktrace"]["frames"][0]
     assert top["function"] == "charge" and top["inApp"] is True and top["filename"].endswith("test_monitoring.py")
     assert event["fingerprint"] == ["payments", "declined"]
-    assert event["sdk"]["name"] == "nerdstack-monitoring"
+    assert event["sdk"]["name"] == "nex-py"
     assert event["contexts"]["runtime"]["name"] in ("cpython", "pypy")
     assert "Traceback" in event["error"]["stack"]  # older servers still get the flat error
 
@@ -234,7 +234,8 @@ def test_heartbeats_run_checks_and_report_degradation() -> None:
     assert monitoring.heartbeat() is True
     path, body = api.calls[-1]
     assert path.endswith("/heartbeat")
-    assert body["dependencies"] == {"database": "healthy", "redis": "down", "queue": "degraded"}
+    assert {name: d["status"] for name, d in body["dependencies"].items()} == {"database": "healthy", "redis": "down", "queue": "degraded"}
+    assert body["dependencies"]["redis"]["error"] == "redis down"
     assert body["status"] == "degraded" and body["version"] == "2.4.1"
     assert monitoring.report_release(commit="abc123") is True
     assert api.calls[-1][1] == {"version": "2.4.1", "service": "checkout-api", "commitSha": "abc123", "environment": "production"}
@@ -252,7 +253,7 @@ def test_logging_records_become_breadcrumbs_and_errors_become_events() -> None:
     logger.addHandler(handler)
     try:
         logger.info("loading order 81")
-        logging.getLogger("nerdstack.monitoring").error("own logs are ignored")
+        logging.getLogger("nex").error("own logs are ignored")
         try:
             charge()
         except PaymentError:

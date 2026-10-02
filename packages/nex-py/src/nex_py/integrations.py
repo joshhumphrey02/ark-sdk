@@ -5,6 +5,8 @@
   crashes; the previous handlers still run, so the process behaves as before.
 - ``MonitoringLogHandler``: log records become breadcrumbs, and
   ``logger.error``/``logger.exception`` become events.
+- ``install_celery``: each Celery task runs as a Nex job (own scope,
+  counted and timed, failures reported with the task's name).
 - ``MonitoringASGIMiddleware`` (FastAPI, Starlette, Quart, Django ASGI) and
   ``MonitoringWSGIMiddleware`` (Flask, Django): each request gets its own
   scope with its method, path, route and user agent; errors are reported
@@ -26,7 +28,7 @@ from typing import Any
 
 from .client import Monitoring
 
-_IGNORED_LOGGERS = ("nerdstack.monitoring",)
+_IGNORED_LOGGERS = ("nex",)
 _LOG_LEVEL = {logging.DEBUG: "debug", logging.INFO: "info", logging.WARNING: "warning", logging.ERROR: "error", logging.CRITICAL: "critical"}
 
 
@@ -74,7 +76,7 @@ def install_asyncio_handler(monitoring: Monitoring, loop: asyncio.AbstractEventL
     """Reports exceptions no task awaited (``Task exception was never retrieved``)."""
     loop = loop or asyncio.get_running_loop()
     previous = loop.get_exception_handler()
-    if getattr(previous, "__nerdstack__", False):
+    if getattr(previous, "__nex__", False):
         return
 
     def handler(loop: asyncio.AbstractEventLoop, context: dict[str, Any]) -> None:
@@ -86,7 +88,7 @@ def install_asyncio_handler(monitoring: Monitoring, loop: asyncio.AbstractEventL
         else:
             loop.default_exception_handler(context)
 
-    handler.__nerdstack__ = True  # type: ignore[attr-defined]
+    handler.__nex__ = True  # type: ignore[attr-defined]
     loop.set_exception_handler(handler)
 
 
@@ -249,3 +251,47 @@ class MonitoringWSGIMiddleware:
             if status.get("code", 0) >= 500:
                 self._server_errors.report(method, path, status["code"])
             return result
+
+
+# --- Celery -------------------------------------------------------------------------------
+
+
+def install_celery(monitoring: Monitoring) -> Callable[[], None]:
+    """Runs every Celery task as a job: its own scope, named after the task,
+    counted and timed for the service's job stats, its failure reported
+    (``handled=False``, tagged ``job``). Call in the worker process, e.g.
+    from ``worker_process_init``. Returns an uninstaller."""
+    from celery import signals  # type: ignore[import-not-found,import-untyped,unused-ignore]
+
+    # task id → (its job, the exception it failed with)
+    running: dict[str, list[Any]] = {}
+
+    def prerun(task_id: str | None = None, task: Any = None, **_: Any) -> None:
+        with contextlib.suppress(Exception):
+            job = monitoring.job(getattr(task, "name", None) or "task")
+            job.__enter__()
+            running[str(task_id)] = [job, None]
+
+    def failure(task_id: str | None = None, exception: BaseException | None = None, **_: Any) -> None:
+        entry = running.get(str(task_id))
+        if entry is not None:
+            entry[1] = exception
+
+    def postrun(task_id: str | None = None, **_: Any) -> None:
+        with contextlib.suppress(Exception):
+            entry = running.pop(str(task_id), None)
+            if entry is None:
+                return
+            job, exc = entry
+            job.__exit__(type(exc) if exc else None, exc, exc.__traceback__ if exc else None)
+
+    signals.task_prerun.connect(prerun, weak=False)
+    signals.task_failure.connect(failure, weak=False)
+    signals.task_postrun.connect(postrun, weak=False)
+
+    def uninstall() -> None:
+        signals.task_prerun.disconnect(prerun)
+        signals.task_failure.disconnect(failure)
+        signals.task_postrun.disconnect(postrun)
+
+    return uninstall

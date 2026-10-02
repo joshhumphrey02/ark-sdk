@@ -1,20 +1,22 @@
-"""Nex monitoring for Python services.
+"""Nex for Python services.
 
 Quick start::
 
-    import nerdstack_monitoring as monitoring
+    import nex_py as nex
+    from nex_py import checks
 
-    monitoring.init(service="checkout-api")   # reads MONITORING_API_URL / MONITORING_TOKEN
-    monitoring.set_user({"id": user.id})
+    nex.init(service="checkout-api", checks={"database": checks.sqlalchemy(engine)})  # NEX_API_URL / NEX_TOKEN
+    nex.set_user({"id": user.id})
     try:
         charge(order)
     except Exception:
-        monitoring.capture_exception()
+        nex.capture_exception()
         raise
 
-``init()`` reports crashes and turns log records into breadcrumbs (and
-``logger.error``/``logger.exception`` into events). Unconfigured means off:
-without an API URL and token every call is a no-op.
+``init()`` reports crashes, turns log records into breadcrumbs (and
+``logger.error``/``logger.exception`` into events), and sends a heartbeat
+with dependency health, outgoing calls, vitals and job stats every 30s.
+Unconfigured means off: without an API URL and token every call is a no-op.
 """
 
 from __future__ import annotations
@@ -23,20 +25,24 @@ import logging
 from collections.abc import Mapping
 from typing import Any
 
+from . import checks
 from ._redact import REDACTED, redact, redact_string
 from ._scope import Scope
+from .checks import DependencyCheck
 from .client import SDK_NAME, Monitoring, MonitoringConfigError, __version__, normalize_environment
 from .integrations import (
     MonitoringASGIMiddleware,
     MonitoringLogHandler,
     MonitoringWSGIMiddleware,
     install_asyncio_handler,
+    install_celery,
     install_crash_handlers,
 )
 
 __all__ = [
     "REDACTED",
     "SDK_NAME",
+    "DependencyCheck",
     "Monitoring",
     "MonitoringASGIMiddleware",
     "MonitoringConfigError",
@@ -48,11 +54,14 @@ __all__ = [
     "capture_event",
     "capture_exception",
     "capture_message",
+    "checks",
     "flush",
     "get_client",
     "init",
     "install_asyncio_handler",
+    "install_celery",
     "install_crash_handlers",
+    "job",
     "new_scope",
     "normalize_environment",
     "redact",
@@ -66,11 +75,21 @@ __all__ = [
 _client: Monitoring | None = None
 
 
-def init(*, crashes: bool = True, logging_integration: bool = True, heartbeat_interval: float | None = 30.0, **options: Any) -> Monitoring:
+def init(
+    *,
+    crashes: bool = True,
+    logging_integration: bool = True,
+    heartbeat_interval: float | None = 30.0,
+    service_map: bool = True,
+    runtime_metrics: bool = True,
+    **options: Any,
+) -> Monitoring:
     """Creates the process-wide client and installs the integrations.
 
-    ``heartbeat_interval=None`` turns automatic heartbeats off. Raises
-    ``MonitoringConfigError`` once, at startup, if configured but invalid.
+    ``heartbeat_interval=None`` turns automatic heartbeats off;
+    ``service_map=False`` stops counting outgoing calls; ``runtime_metrics=False``
+    leaves vitals out. Raises ``MonitoringConfigError`` once, at startup, if
+    configured but invalid.
     """
     global _client
     client = Monitoring(**options)
@@ -86,7 +105,7 @@ def init(*, crashes: bool = True, logging_integration: bool = True, heartbeat_in
         if not any(isinstance(h, MonitoringLogHandler) for h in root.handlers):
             root.addHandler(MonitoringLogHandler(client))
     if heartbeat_interval:
-        client.start(heartbeat_interval)
+        client.start(heartbeat_interval, service_map=service_map, runtime_metrics=runtime_metrics)
     return client
 
 
@@ -138,6 +157,19 @@ def new_scope() -> Any:
 
         return contextlib.nullcontext(Scope())
     return _client.new_scope()
+
+
+def job(name: str, **options: Any) -> Any:
+    """``with nex.job("name"):`` / ``@nex.job("name")``; plain when not initialised."""
+    if _client is None:
+        import contextlib
+
+        class _Plain(contextlib.nullcontext[None]):
+            def __call__(self, fn: Any) -> Any:
+                return fn
+
+        return _Plain()
+    return _client.job(name, **options)
 
 
 def flush(timeout: float = 5.0) -> bool:

@@ -1,4 +1,4 @@
-"""The monitoring client.
+"""The Nex client.
 
 Safe to call from anywhere, at any time:
 
@@ -14,7 +14,10 @@ Safe to call from anywhere, at any time:
 from __future__ import annotations
 
 import atexit
+import concurrent.futures
 import contextlib
+import functools
+import inspect
 import json
 import logging
 import os
@@ -24,20 +27,22 @@ import sys
 import threading
 import time
 from collections import deque
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, TypeVar, cast
 
 import httpx
 
 from ._redact import bound_json, redact, redact_bounded, strip_query, truncate
 from ._scope import Scope, current_scope, pop_scope, push_scope
 from ._stack import exception_chain, flat_error
+from ._stats import CallRecorder, JobRecorder, RuntimeSampler, install_http_observers
+from .checks import DependencyCheck, clean_target
 
 __version__ = "0.1.0"
-SDK_NAME = "nerdstack-monitoring"
+SDK_NAME = "nex-py"
 
-log = logging.getLogger("nerdstack.monitoring")
+log = logging.getLogger("nex")
 
 TOKEN_PATTERN = re.compile(r"^nsk_(live|test)_[A-Za-z0-9_-]{20,}$")
 SERVICE_PATTERN = re.compile(r"^[a-z0-9]+(?:[-_.][a-z0-9]+)*$")
@@ -61,14 +66,16 @@ FAILURES_BEFORE_PAUSE = 3
 BASE_PAUSE = 30.0
 MAX_PAUSE = 300.0
 
-Check = Callable[[], Any]
+Check = Callable[[], Any] | DependencyCheck
+F = TypeVar("F", bound=Callable[..., Any])
+DEPENDENCY_STATUSES = ("healthy", "degraded", "unhealthy", "down", "unknown")
 
 
 class MonitoringConfigError(ValueError):
     """Raised once, at startup, when monitoring is configured but invalid."""
 
     def __init__(self, problems: list[str]) -> None:
-        super().__init__("Nex monitoring is misconfigured: " + "; ".join(problems))
+        super().__init__("Nex is misconfigured: " + "; ".join(problems))
         self.problems = problems
 
 
@@ -93,8 +100,8 @@ def _api_url(raw: str) -> str:
     return url
 
 
-def _status_from(dependencies: Mapping[str, str]) -> str:
-    return "degraded" if any(s in ("down", "unhealthy", "degraded") for s in dependencies.values()) else "healthy"
+def _status_from(dependencies: Mapping[str, Mapping[str, Any]]) -> str:
+    return "degraded" if any(d["status"] in ("down", "unhealthy", "degraded") for d in dependencies.values()) else "healthy"
 
 
 def _dependency_status(value: Any) -> str:
@@ -102,7 +109,33 @@ def _dependency_status(value: Any) -> str:
         return "healthy"
     if value is False or value is None:
         return "down"
-    return value if value in ("healthy", "degraded", "unhealthy", "down", "unknown") else "unknown"
+    return value if value in DEPENDENCY_STATUSES else "unknown"
+
+
+def _dependency_report(
+    result: Any, *, kind: str | None = None, target: str | None = None, latency_ms: float | None = None, error: str | None = None
+) -> dict[str, Any]:
+    """A check's result → the report sent: bounded, without credentials."""
+    data = result if isinstance(result, Mapping) else None
+    report: dict[str, Any] = {"status": _dependency_status(data.get("status") if data is not None else result)}
+    kind = (data or {}).get("kind") or kind
+    target = clean_target((data or {}).get("target") or target)
+    if kind:
+        report["kind"] = truncate(str(kind), 40)
+    if target:
+        report["target"] = target
+    latency = (data or {}).get("latencyMs", latency_ms)
+    if isinstance(latency, (int, float)) and not isinstance(latency, bool):
+        report["latencyMs"] = max(0, round(latency))
+    metrics = (data or {}).get("metrics")
+    if isinstance(metrics, Mapping):
+        clean = {truncate(str(k), 80): v for k, v in list(metrics.items())[:40] if isinstance(v, (int, float)) and not isinstance(v, bool)}
+        if clean:
+            report["metrics"] = clean
+    error = (data or {}).get("error") or error
+    if error:
+        report["error"] = redact_bounded(str(error), 500)
+    return report
 
 
 def _now() -> str:
@@ -139,30 +172,31 @@ class Monitoring:
         redact_keys: tuple[str, ...] = (),
         before_send: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
         checks: Mapping[str, Check] | None = None,
+        check_timeout: float = 2.0,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         env = os.environ
-        url = _first(api_url, env.get("MONITORING_API_URL"), env.get("MONITORING_URL"))
-        token = _first(token, env.get("MONITORING_TOKEN"))
-        switch = env.get("MONITORING_ENABLED", "").strip().lower()
+        url = _first(api_url, env.get("NEX_API_URL"), env.get("MONITORING_API_URL"), env.get("MONITORING_URL"))
+        token = _first(token, env.get("NEX_TOKEN"), env.get("MONITORING_TOKEN"))
+        switch = (_first(env.get("NEX_ENABLED"), env.get("MONITORING_ENABLED")) or "").lower()
         self.enabled = enabled if enabled is not None else switch != "false" and bool(url or token)
-        self.service = _first(service, env.get("MONITORING_SERVICE")) or ""
-        self.environment = normalize_environment(_first(environment, env.get("MONITORING_ENVIRONMENT")))
+        self.service = _first(service, env.get("NEX_SERVICE"), env.get("MONITORING_SERVICE")) or ""
+        self.environment = normalize_environment(_first(environment, env.get("NEX_ENVIRONMENT"), env.get("MONITORING_ENVIRONMENT")))
         commit = _first(env.get("GIT_COMMIT"), env.get("SOURCE_COMMIT"), env.get("GITHUB_SHA"), env.get("RENDER_GIT_COMMIT"))
         self.release = _first(release, env.get("APP_VERSION"), env.get("RELEASE"), commit[:12] if commit else None)
 
         if self.enabled:
             problems = []
             if not url:
-                problems.append("api_url is required (or MONITORING_API_URL)")
+                problems.append("api_url is required (or NEX_API_URL)")
             elif not re.match(r"^https?://", url):
                 problems.append("api_url must be an http(s) URL")
             if not token:
-                problems.append("token is required (or MONITORING_TOKEN)")
+                problems.append("token is required (or NEX_TOKEN)")
             elif not TOKEN_PATTERN.match(token):
                 problems.append("token does not look like a Nex SDK token (nsk_live_… / nsk_test_…)")
             if not self.service:
-                problems.append("service is required (or MONITORING_SERVICE)")
+                problems.append("service is required (or NEX_SERVICE)")
             elif not SERVICE_PATTERN.match(self.service):
                 problems.append(f'service "{self.service}" is not a valid slug (lowercase letters, digits, - _ .)')
             if problems:
@@ -175,6 +209,13 @@ class Monitoring:
         self._redact_keys = redact_keys
         self._before_send = before_send
         self.checks = dict(checks or {})
+        self._check_timeout = check_timeout
+        self._calls = CallRecorder()
+        self._jobs = JobRecorder()
+        self._runtime: RuntimeSampler | None = None
+        self._uninstall_observers: Callable[[], None] | None = None
+        self._legacy_heartbeat = False
+        self._last_detail = ""
         self._queue: deque[dict[str, Any]] = deque(maxlen=max(1, max_buffer))
         self._lock = threading.Condition()
         self._sending = False
@@ -194,7 +235,7 @@ class Monitoring:
                 transport=transport,
                 headers={
                     "Authorization": f"Bearer {self._token}",
-                    "User-Agent": f"{SDK_NAME}-py/{__version__}",
+                    "User-Agent": f"{SDK_NAME}/{__version__}",
                     "Accept": "application/json",
                 },
             )
@@ -283,10 +324,10 @@ class Monitoring:
         if exc is None or not self.enabled:
             return False
         try:
-            if getattr(exc, "__nerdstack_reported__", False):
+            if getattr(exc, "__nex_reported__", False):
                 return False
             with contextlib.suppress(Exception):
-                exc.__nerdstack_reported__ = True  # type: ignore[attr-defined]
+                exc.__nex_reported__ = True  # type: ignore[attr-defined]
             error = flat_error(exc)
             return self._capture(
                 {
@@ -439,7 +480,7 @@ class Monitoring:
         with self._lock:
             if self._worker and self._worker.is_alive():
                 return
-            self._worker = threading.Thread(target=self._run, name="nerdstack-monitoring", daemon=True)
+            self._worker = threading.Thread(target=self._run, name="nex-delivery", daemon=True)
             self._worker.start()
 
     def _run(self) -> None:
@@ -510,17 +551,21 @@ class Monitoring:
     def _post(self, path: str, body: Any) -> int | None:
         if not self._http:
             return None
+        self._last_detail = ""
         try:
             response = self._http.post(self._url + path, json=body)
         except Exception:
             return None
         if response.status_code == 401:
             self._token_rejected = True
-            self._warn_once("401", "The monitoring token was rejected (401). Reporting is stopped; check MONITORING_TOKEN.")
+            self._warn_once("401", "The Nex token was rejected (401). Reporting is stopped; check NEX_TOKEN.")
         elif 400 <= response.status_code < 500 and response.status_code != 429:
             detail = ""
             with contextlib.suppress(Exception):
                 detail = str(response.json().get("detail", ""))
+            self._last_detail = detail
+            if path == "/heartbeat" and response.status_code == 422 and detail.startswith("dependencies") and not self._legacy_heartbeat:
+                return response.status_code  # Retried in the older format; not worth a warning.
             self._warn_once(f"{response.status_code}:{path}:{detail}", f"POST {path} was rejected ({response.status_code}): {detail}. It will not be retried.")
         return response.status_code
 
@@ -542,6 +587,10 @@ class Monitoring:
     def close(self, timeout: float = 2.0) -> None:
         """Stops heartbeats and flushes (bounded). Called at exit automatically."""
         self._heartbeat_stop.set()
+        if self._uninstall_observers:
+            with contextlib.suppress(Exception):
+                self._uninstall_observers()
+            self._uninstall_observers = None
         if self._closed:
             return
         self.flush(timeout)
@@ -556,18 +605,18 @@ class Monitoring:
         if key in self._warned:
             return
         self._warned.add(key)
-        log.warning("[nerdstack-monitoring] %s", message)
+        log.warning("[nex] %s", message)
 
     # --- Heartbeats & releases ---------------------------------------------------------
 
     def heartbeat(self, *, status: str | None = None, dependencies: Mapping[str, Any] | None = None) -> bool:
-        """Reports the service alive, with dependency health (from ``checks`` when not given)."""
+        """Reports the service alive, with each dependency's health (from
+        ``checks`` when not given), outgoing calls, vitals and job stats."""
         if not self.enabled or self._token_rejected:
             return False
         started = time.monotonic()
-        if dependencies is None:
-            dependencies = self._run_checks()
-        deps = {str(name)[:100]: _dependency_status(value) for name, value in list(dependencies.items())[:50]}
+        given = list((dependencies or {}).items())[:50]
+        deps = self._run_checks() if dependencies is None else {str(name)[:64]: _dependency_report(value) for name, value in given}
         body: dict[str, Any] = {
             "service": self.service,
             "status": status or _status_from(deps),
@@ -580,23 +629,65 @@ class Monitoring:
             body["version"] = truncate(self.release, 64)
         if self.environment:
             body["environment"] = self.environment
-        status_code = self._post("/heartbeat", body)
+        calls = self._calls.take()
+        jobs = self._jobs.take()
+        if calls:
+            body["calls"] = calls
+        if jobs:
+            body["jobs"] = jobs
+        if self._runtime:
+            body["runtime"] = self._runtime.take()
+        status_code = self._post("/heartbeat", _legacy(body) if self._legacy_heartbeat else body)
+        if status_code == 422 and not self._legacy_heartbeat and self._last_detail.startswith("dependencies"):
+            # A server from before dependency reports takes statuses only.
+            self._legacy_heartbeat = True
+            status_code = self._post("/heartbeat", _legacy(body))
         return status_code is not None and status_code < 300
 
-    def _run_checks(self) -> dict[str, Any]:
-        results: dict[str, Any] = {}
-        for name, check in self.checks.items():
-            try:
-                results[name] = check()
-            except Exception:
-                results[name] = "down"
+    def _run_checks(self) -> dict[str, dict[str, Any]]:
+        checks = list(self.checks.items())[:50]
+        if not checks:
+            return {}
+        results: dict[str, dict[str, Any]] = {}
+        # Every check shares one deadline; one that hangs reports down
+        # without holding up the heartbeat (its thread is left to finish).
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(checks)), thread_name_prefix="nex-check")
+        try:
+            futures = {}
+            for name, check in checks:
+                definition = check if isinstance(check, DependencyCheck) else DependencyCheck(check)
+                futures[str(name)[:64]] = (definition, executor.submit(_timed, definition.check))
+            deadline = time.perf_counter() + self._check_timeout
+            for name, (definition, future) in futures.items():
+                try:
+                    result, elapsed = future.result(timeout=max(0.0, deadline - time.perf_counter()))
+                    results[name] = _dependency_report(result, kind=definition.kind, target=definition.target, latency_ms=elapsed)
+                except concurrent.futures.TimeoutError:
+                    waited = self._check_timeout * 1000
+                    results[name] = _dependency_report(
+                        "down", kind=definition.kind, target=definition.target, latency_ms=waited, error=f"No answer within {waited:.0f}ms"
+                    )
+                except Exception as exc:
+                    results[name] = _dependency_report("down", kind=definition.kind, target=definition.target, error=str(exc) or type(exc).__name__)
+        finally:
+            executor.shutdown(wait=False)
         return results
 
-    def start(self, interval: float = 30.0) -> None:
-        """Heartbeats every ``interval`` seconds from a daemon thread, until ``close()``."""
+    def start(self, interval: float = 30.0, *, service_map: bool = True, runtime_metrics: bool = True) -> None:
+        """Heartbeats every ``interval`` seconds from a daemon thread, until
+        ``close()``. Also counts outgoing ``httpx``/``requests`` calls per
+        target for the service map, and samples memory, CPU and threads."""
         if not self.enabled or (self._heartbeat_thread and self._heartbeat_thread.is_alive()):
             return
         self._heartbeat_stop.clear()
+        if runtime_metrics:
+            self._runtime = RuntimeSampler()
+        if service_map and self._uninstall_observers is None:
+            origin = None
+            with contextlib.suppress(Exception):
+                parsed = httpx.URL(self._url)
+                origin = f"{parsed.scheme}://{parsed.netloc.decode()}"
+            self._uninstall_observers = install_http_observers(self._calls.record, origin)
 
         def loop() -> None:
             while not self._heartbeat_stop.is_set():
@@ -604,8 +695,30 @@ class Monitoring:
                     self.heartbeat()
                 self._heartbeat_stop.wait(interval)
 
-        self._heartbeat_thread = threading.Thread(target=loop, name="nerdstack-monitoring-heartbeat", daemon=True)
+        self._heartbeat_thread = threading.Thread(target=loop, name="nex-heartbeat", daemon=True)
         self._heartbeat_thread.start()
+
+    # --- Jobs ------------------------------------------------------------------------
+
+    def job(self, name: str, *, tags: Mapping[str, object] | None = None) -> _Job:
+        """One unit of background work (a queue message, a cron run), as a
+        context manager or a decorator, sync or async::
+
+            with monitoring.job("process-order"):
+                handle(message)
+
+            @monitoring.job("sync-invoices")
+            async def sync_invoices(): ...
+
+        The run gets its own scope; its exception is reported with the job's
+        name and re-raised; every run is counted and timed for Nex.
+        """
+        return _Job(self, name, tags)
+
+    def _record_job(self, name: str, duration_ms: float, failed: bool) -> None:
+        if self.enabled:
+            with contextlib.suppress(Exception):
+                self._jobs.record(name, duration_ms, failed)
 
     def report_release(self, version: str | None = None, *, commit: str | None = None, service: str | None = None) -> bool:
         """Records a deployment of ``version`` (default: the configured release)."""
@@ -636,3 +749,63 @@ class Monitoring:
                 yield scope
 
         return scoped()
+
+
+def _timed(check: Callable[[], Any]) -> tuple[Any, float]:
+    started = time.perf_counter()
+    result = check()
+    return result, (time.perf_counter() - started) * 1000
+
+
+def _legacy(body: dict[str, Any]) -> dict[str, Any]:
+    """The heartbeat as servers before 2026-10 accept it: dependency statuses only."""
+    out = {k: v for k, v in body.items() if k not in ("calls", "jobs", "runtime")}
+    if "dependencies" in out:
+        out["dependencies"] = {name: d["status"] for name, d in out["dependencies"].items()}
+    return out
+
+
+class _Job:
+    """``Monitoring.job()``: a context manager, and a decorator for sync and async functions."""
+
+    def __init__(self, monitoring: Monitoring, name: str, tags: Mapping[str, object] | None) -> None:
+        self._monitoring = monitoring
+        self._name = name
+        self._tags = dict(tags or {})
+        self._stack: list[tuple[contextlib.AbstractContextManager[Scope], float]] = []
+
+    def __enter__(self) -> Scope:
+        scope_cm = self._monitoring.new_scope()
+        scope = scope_cm.__enter__()
+        scope.set_transaction(self._name)
+        for key, value in self._tags.items():
+            scope.set_tag(key, value)
+        self._stack.append((scope_cm, time.perf_counter()))
+        return scope
+
+    def __exit__(self, kind: type[BaseException] | None, exc: BaseException | None, tb: Any) -> None:
+        scope_cm, started = self._stack.pop()
+        failed = exc is not None and not isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit))
+        try:
+            self._monitoring._record_job(self._name, (time.perf_counter() - started) * 1000, failed)
+            if failed and exc is not None:
+                self._monitoring.capture_exception(exc, handled=False, mechanism="job", tags={"job": self._name})
+        finally:
+            scope_cm.__exit__(kind, exc, tb)
+
+    def __call__(self, fn: F) -> F:
+        if inspect.iscoroutinefunction(fn):
+
+            @functools.wraps(fn)
+            async def run_async(*args: Any, **kwargs: Any) -> Any:
+                with _Job(self._monitoring, self._name, self._tags):
+                    return await cast(Callable[..., Awaitable[Any]], fn)(*args, **kwargs)
+
+            return cast(F, run_async)
+
+        @functools.wraps(fn)
+        def run(*args: Any, **kwargs: Any) -> Any:
+            with _Job(self._monitoring, self._name, self._tags):
+                return fn(*args, **kwargs)
+
+        return cast(F, run)

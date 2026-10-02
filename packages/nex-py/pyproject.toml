@@ -3,14 +3,14 @@ requires = ["hatchling>=1.26"]
 build-backend = "hatchling.build"
 
 [project]
-name = "nerdstack-monitoring"
+name = "nex-py"
 version = "0.1.0"
-description = "Nex monitoring for Python: errors with stack frames, breadcrumbs, users and requests, crash reports, heartbeats and releases."
+description = "Nex for Python: errors and crashes with full context, dependency health (databases, Redis, RabbitMQ), service maps, runtime and job metrics, and releases."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [{ name = "Nerdstack" }]
-keywords = ["nex", "monitoring", "error-reporting", "observability", "fastapi", "django", "flask"]
+keywords = ["nex", "monitoring", "celery", "redis", "rabbitmq", "error-reporting", "observability", "fastapi", "django", "flask"]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Framework :: AsyncIO",
@@ -32,11 +32,11 @@ dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "starlette>=0.37", "ruff>=0.9", "m
 
 [project.urls]
 Homepage = "https://nex.nerdstackgrp.com"
-Documentation = "https://github.com/joshhumphrey02/ark-sdk/tree/master/packages/monitoring-py#readme"
+Documentation = "https://github.com/joshhumphrey02/ark-sdk/tree/master/packages/nex-py#readme"
 Repository = "https://github.com/joshhumphrey02/ark-sdk"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/nerdstack_monitoring"]
+packages = ["src/nex_py"]
 
 [tool.pytest.ini_options]
 addopts = "-q"
@@ -53,5 +53,5 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 [tool.mypy]
 python_version = "3.10"
 strict = true
-packages = ["nerdstack_monitoring"]
+packages = ["nex_py"]
 mypy_path = "src"
