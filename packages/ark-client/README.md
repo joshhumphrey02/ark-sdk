@@ -65,6 +65,28 @@ upload.abort();
 
 Aborting also releases the server-side upload session and its quota hold.
 
+## Uploading to a session from your backend
+
+Products on Ark's product API (`ArkProduct` in `@nerdstackgrp/ark-server`)
+create upload sessions on their backend. The browser only moves the bytes:
+
+```ts
+import { uploadToSession } from "@nerdstackgrp/ark-client";
+
+const session = await myApi.startUpload({ name: file.name, size: file.size, type: file.type });
+const { parts } = await uploadToSession(file, session, {
+  onProgress: ({ percentage }) => setProgress(percentage),
+  signal: controller.signal,
+});
+await myApi.finishUpload(session.uploadId, parts); // ArkProduct.uploads.complete
+```
+
+## Content-Security-Policy
+
+`ARK_DELIVERY_ORIGINS` (images and video), `ARK_UPLOAD_ORIGINS` (upload
+`connect-src`) and `ARK_API_ORIGIN` are exported, so applications import
+Ark's addresses instead of configuring them.
+
 ## Ark Streams
 
 Upload video through Ark's resumable TUS facade; provider credentials and URLs

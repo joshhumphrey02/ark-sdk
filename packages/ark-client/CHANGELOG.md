@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.1.0
+
+### Added
+
+- `uploadToSession` uploads a file to a session a product's backend created
+  through Ark's product API, and returns the part ETags to complete it with.
+  It only ever uses the presigned URLs, since the browser holds no Ark
+  credential for the fallback.
+- `ARK_DELIVERY_ORIGINS`, `ARK_UPLOAD_ORIGINS` and `ARK_API_ORIGIN`, the Ark
+  addresses a browser reaches, for an application's Content-Security-Policy.
+
+### Changed
+
+- The upload transfer (single PUT, parts, fallback) moved to one shared
+  module; `ArkClient.files.upload` behaves as before.
+
 ## 1.0.6
 
 ### Added

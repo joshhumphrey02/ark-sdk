@@ -19,6 +19,24 @@
 
 export { Ark } from "./ark";
 export { ArkS3 } from "./s3";
+export { ArkProduct, signRequest, verifyArkWebhook } from "./product";
+export type {
+  ArkAsset,
+  ArkEntitlementsInput,
+  ArkEntitlementsResult,
+  ArkEntitlementSourceType,
+  ArkFolderEntry,
+  ArkOrganization,
+  ArkOrganizationRef,
+  ArkOrganizationUsage,
+  ArkPage,
+  ArkProductCallEvent,
+  ArkProductInfo,
+  ArkProductOptions,
+  ArkProductUploadSession,
+  ArkUploadInput,
+  ArkWebhookEvent,
+} from "./product";
 export { ArkError } from "./errors";
 export type { ArkErrorCode } from "./errors";
 export type {

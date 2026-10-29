@@ -6,7 +6,8 @@
  * handles a single error type (§40).
  */
 
-export type ArkErrorCode =
+/** Codes this SDK produces itself, each with Ark's own wording. */
+type CoreErrorCode =
   | "INVALID_ARGUMENT"
   | "UNAUTHORIZED"
   | "INSUFFICIENT_SCOPE"
@@ -21,22 +22,41 @@ export type ArkErrorCode =
   | "BLOCKED_BY_EDGE"
   | "INTERNAL_ERROR";
 
+export type ArkErrorCode =
+  | CoreErrorCode
+  // Product integration API (`ArkProduct`).
+  | "CONFLICT"
+  | "INVALID_CLIENT"
+  | "STALE_REVISION"
+  | "IDEMPOTENCY_IN_PROGRESS"
+  | "ORGANIZATION_NOT_READY"
+  | "STORAGE_LIMIT_EXCEEDED"
+  // Ark may add codes; they arrive as sent.
+  | (string & {});
+
+/** Conflicts that clear up on their own, so a retry later can succeed. */
+const TRANSIENT_CONFLICTS: ReadonlySet<string> = new Set(["IDEMPOTENCY_IN_PROGRESS", "ORGANIZATION_NOT_READY"]);
+
 export class ArkError extends Error {
   readonly code: ArkErrorCode;
   readonly status: number | null;
   readonly requestId: string | null;
+  /** Ark's structured details, e.g. `currentRevision` with STALE_REVISION. */
+  readonly details: Record<string, unknown>;
 
   constructor(input: {
     code: ArkErrorCode;
     message: string;
     status?: number | null;
     requestId?: string | null;
+    details?: Record<string, unknown>;
   }) {
     super(input.message);
     this.name = "ArkError";
     this.code = input.code;
     this.status = input.status ?? null;
     this.requestId = input.requestId ?? null;
+    this.details = input.details ?? {};
   }
 
   get retryable() {
@@ -45,14 +65,15 @@ export class ArkError extends Error {
     if (
       this.code === "RATE_LIMITED" ||
       this.code === "NETWORK_ERROR" ||
-      this.code === "BLOCKED_BY_EDGE"
+      this.code === "BLOCKED_BY_EDGE" ||
+      TRANSIENT_CONFLICTS.has(this.code)
     )
       return true;
     return this.status !== null && this.status >= 500;
   }
 }
 
-const S3_CODES: Record<string, ArkErrorCode> = {
+const S3_CODES: Record<string, CoreErrorCode> = {
   AccessDenied: "ACCESS_DENIED",
   NoSuchBucket: "NO_SUCH_BUCKET",
   NoSuchKey: "NO_SUCH_KEY",
@@ -71,7 +92,7 @@ const S3_CODES: Record<string, ArkErrorCode> = {
  * vendor and its internals. Callers integrate against Ark, so they are told
  * what went wrong in Ark's terms; the upstream text is never passed through.
  */
-const ARK_MESSAGES: Record<ArkErrorCode, string> = {
+const ARK_MESSAGES: Record<CoreErrorCode, string> = {
   INVALID_ARGUMENT: "The request was not valid.",
   UNAUTHORIZED: "These credentials are not valid.",
   INSUFFICIENT_SCOPE: "These credentials do not allow this operation.",
@@ -157,6 +178,7 @@ export async function errorFromRest(response: Response): Promise<ArkError> {
     402: "QUOTA_EXCEEDED",
     403: "INSUFFICIENT_SCOPE",
     404: "NOT_FOUND",
+    409: "CONFLICT",
     429: "RATE_LIMITED",
   };
   return new ArkError({
@@ -166,5 +188,6 @@ export async function errorFromRest(response: Response): Promise<ArkError> {
       (typeof rawError === "string" ? rawError : `Request failed with status ${response.status}`),
     status: response.status,
     requestId: envelope.requestId ?? null,
+    details: envelope.details && typeof envelope.details === "object" ? envelope.details : {},
   });
 }

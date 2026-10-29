@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.1.0
+
+### Added
+
+- `ArkProduct`, a client for Ark's product integration API
+  (`/api/v1/internal`), for products that run one Ark organization per
+  customer: client-credentials tokens (cached, shared by concurrent calls,
+  refreshed once on a 401), optional request signing, timeouts, per-request
+  headers and an `onResponse` hook for metrics. Covers organizations,
+  entitlements, usage, uploads, assets and folders; organizations are
+  addressed by Ark id or `{ externalTenantId }`.
+- `verifyArkWebhook` checks `X-Ark-Signature` in constant time with a
+  five-minute replay window; `signRequest` is exported for other callers.
+- `ArkError.details` carries Ark's structured error details (e.g.
+  `currentRevision` with `STALE_REVISION`). 409 maps to `CONFLICT`, and
+  `IDEMPOTENCY_IN_PROGRESS` / `ORGANIZATION_NOT_READY` are `retryable`.
+
 ## 1.0.8
 
 ### Added

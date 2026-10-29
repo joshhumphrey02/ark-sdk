@@ -86,6 +86,47 @@ const session = await ark.createClientSession({ ttlSeconds: 900 });
 // Hand session.token to the browser, use it with @nerdstackgrp/ark-client.
 ```
 
+## Product integration API
+
+For NerdStack products that give each customer their own Ark organization
+(Cartly, …). The product holds one client credential; customers never get
+Ark credentials.
+
+```ts
+import { ArkProduct, verifyArkWebhook } from "@nerdstackgrp/ark-server";
+
+const ark = new ArkProduct({
+  clientId: process.env.ARK_CLIENT_ID!,
+  clientSecret: process.env.ARK_CLIENT_SECRET!,
+  requestSigningSecret: process.env.ARK_REQUEST_SIGNING_SECRET, // when signing is on
+  headers: () => ({ "x-correlation-id": requestId() }),
+  onResponse: ({ operation, status }) => metrics.inc(operation, status),
+});
+
+const org = { externalTenantId: account.id }; // or Ark's organization id
+await ark.organizations.create({ externalTenantId: account.id, name: account.name });
+await ark.entitlements.set(org, {
+  revision: 12,
+  source: { type: "PLAN", reference: "my-product-subscription" },
+  entitlements: [{ key: "media.storage.bytes", limit: 5 * 1024 ** 3 }],
+});
+
+// Browser uploads: create the session here, send it to the browser
+// (without fallbackUrl), let it call uploadToSession from
+// @nerdstackgrp/ark-client, then complete here with the part ETags.
+const session = await ark.uploads.create(org, { filename, size, mimeType }, { idempotencyKey: asset.id });
+const file = await ark.uploads.complete(org, session.uploadId, parts);
+
+// Webhooks: verify the raw body before parsing it.
+if (!verifyArkWebhook(rawBody, req.headers["x-ark-signature"], process.env.ARK_WEBHOOK_SECRET)) reject();
+```
+
+Also: `organizations.get/list/update/suspend/reactivate`, `usage.get/history`,
+`uploads.abort`, `assets.list/get/delivery/update/delete`, `folders.*`, and
+`product()` (a health check). Deleting or aborting something already gone
+succeeds. Errors are `ArkError` with Ark's `code`, `status`, `details` and
+`retryable`.
+
 ## S3-compatible API
 
 ```ts

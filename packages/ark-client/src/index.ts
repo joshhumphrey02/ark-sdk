@@ -16,6 +16,8 @@
 
 export { ArkClient, type ArkUploadHandle } from "./client";
 export { ArkError } from "./errors";
+export { uploadToSession, type UploadToSessionOptions } from "./transfer";
+export { ARK_API_ORIGIN, ARK_DELIVERY_ORIGINS, ARK_UPLOAD_ORIGINS } from "./origins";
 export type {
   ArkClientOptions,
   ArkErrorCode,
