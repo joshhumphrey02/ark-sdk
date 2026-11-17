@@ -4,7 +4,8 @@ Nerdstack SDKs. For Ark storage: `@nerdstackgrp/ark-client` for direct browser
 uploads, `@nerdstackgrp/ark-server` for TypeScript backends, and `nerdstack-ark`
 for Python frameworks and workers. For monitoring with Nex:
 `@nerdstackgrp/nex-js` (servers and browsers), `nex-python` (Python), and
-`@nerdstackgrp/nex-wizard`, which sets either up in one command.
+`@nerdstackgrp/nex-wizard`, which sets either up in one command. For Cartly:
+`@nerdstackgrp/cartly`, the typed storefront, checkout and account SDK.
 
 ## Install
 
@@ -22,6 +23,7 @@ npm install @nerdstackgrp/ark-client   # browser
 npm install @nerdstackgrp/ark-server   # backend
 npm install @nerdstackgrp/nex-js       # Nex monitoring (Node, Bun, browsers)
 pip install nex-python                 # Nex monitoring (Python)
+npm install @nerdstackgrp/cartly       # Cartly storefronts, checkout, accounts
 ```
 
 Both ship ESM and CommonJS builds with TypeScript declarations, and have zero
@@ -119,6 +121,25 @@ See [`packages/nex-js/README.md`](packages/nex-js/README.md). Formerly
 
 The same for Python services (FastAPI, Starlette, Django, Flask, Celery,
 scripts). See [`packages/nex-py/README.md`](packages/nex-py/README.md).
+
+### `@nerdstackgrp/cartly`
+
+The typed Cartly SDK: a GraphQL client with typed storefront, cart, checkout,
+customer-account and booking operations, REST sign-in, a cross-tab session,
+stable error codes and React hooks.
+
+```ts
+import { createCartlyServerClient } from "@nerdstackgrp/cartly";
+import { StorefrontProductsQuery } from "@nerdstackgrp/cartly/operations";
+
+const store = createCartlyServerClient({ apiUrl: "https://api.cartly.store" })
+  .with({ storefrontHost: "shop.example.com" });
+const { storefrontProducts } = await store.request(StorefrontProductsQuery);
+```
+
+Its source of truth is `@repo/api` in the Cartly storefront repository: change
+it there, then `npm run sync && npm run codegen` in `packages/cartly-js`. See
+[`packages/cartly-js/README.md`](packages/cartly-js/README.md).
 
 ### `nerdstack-ark` for Python
 

@@ -1,0 +1,6 @@
+# Input types the SDK exports but none of its own operations take as a
+# variable. `onlyOperationTypes` would drop them, so this operation references
+# them. It is never sent: it only makes codegen emit those types.
+query CartlySdkTypeAnchors($homePage: StorefrontHomePageInput) {
+  __typename
+}

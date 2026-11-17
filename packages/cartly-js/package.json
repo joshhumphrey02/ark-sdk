@@ -1,0 +1,139 @@
+{
+  "name": "@nerdstackgrp/cartly",
+  "version": "0.1.0",
+  "description": "The typed Cartly SDK: a GraphQL client with typed storefront, checkout and account operations, REST sign-in, sessions, errors and React hooks.",
+  "license": "MIT",
+  "author": "Nerdstack",
+  "homepage": "https://github.com/joshhumphrey02/ark-sdk/tree/master/packages/cartly-js#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joshhumphrey02/ark-sdk.git",
+    "directory": "packages/cartly-js"
+  },
+  "bugs": {
+    "url": "https://github.com/joshhumphrey02/ark-sdk/issues"
+  },
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./graphql": {
+      "import": {
+        "types": "./dist/graphql.d.ts",
+        "default": "./dist/graphql.js"
+      },
+      "require": {
+        "types": "./dist/graphql.d.cts",
+        "default": "./dist/graphql.cjs"
+      }
+    },
+    "./graphql/types": {
+      "import": {
+        "types": "./dist/graphql-types.d.ts",
+        "default": "./dist/graphql-types.js"
+      },
+      "require": {
+        "types": "./dist/graphql-types.d.cts",
+        "default": "./dist/graphql-types.cjs"
+      }
+    },
+    "./operations": {
+      "import": {
+        "types": "./dist/operations.d.ts",
+        "default": "./dist/operations.js"
+      },
+      "require": {
+        "types": "./dist/operations.d.cts",
+        "default": "./dist/operations.cjs"
+      }
+    },
+    "./react": {
+      "import": {
+        "types": "./dist/react.d.ts",
+        "default": "./dist/react.js"
+      },
+      "require": {
+        "types": "./dist/react.d.cts",
+        "default": "./dist/react.cjs"
+      }
+    },
+    "./storefront-content": {
+      "import": {
+        "types": "./dist/storefront-content.d.ts",
+        "default": "./dist/storefront-content.js"
+      },
+      "require": {
+        "types": "./dist/storefront-content.d.cts",
+        "default": "./dist/storefront-content.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "keywords": [
+    "cartly",
+    "nerdstack",
+    "ecommerce",
+    "storefront",
+    "checkout",
+    "graphql",
+    "react",
+    "sdk"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "sync": "node scripts/sync.mjs",
+    "sync:check": "node scripts/sync.mjs --check",
+    "codegen": "graphql-codegen --config codegen.ts",
+    "build": "tsup",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@graphql-typed-document-node/core": "3.2.0"
+  },
+  "peerDependencies": {
+    "@tanstack/react-query": "^5.0.0",
+    "react": ">=19"
+  },
+  "peerDependenciesMeta": {
+    "@tanstack/react-query": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@graphql-codegen/cli": "7.4.6",
+    "@graphql-codegen/client-preset": "6.2.3",
+    "@tanstack/react-query": "5.105.0",
+    "@types/react": "^19.0.0",
+    "graphql": "17.0.2",
+    "react": "^19.0.0",
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.2"
+  }
+}

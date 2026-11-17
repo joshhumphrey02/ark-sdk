@@ -16,3 +16,6 @@ packages/ark-py/*.egg-info/
 packages/ark-py/src/*.egg-info/
 __pycache__/
 *.py[cod]
+
+# The full Cartly backend schema is private; npm run sync copies it here for codegen.
+packages/cartly-js/schema/
