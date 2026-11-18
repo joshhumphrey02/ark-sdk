@@ -174,7 +174,12 @@ export function mergeContext(
  * order.
  */
 export function createIdempotencyKey(): string {
-  return `chk_${crypto.randomUUID()}`
+  // React Native has no global crypto. A key only has to be unique, not secret.
+  const webCrypto = (globalThis as { crypto?: Partial<Crypto> }).crypto
+  const unique =
+    webCrypto?.randomUUID?.() ??
+    `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`
+  return `chk_${unique}`
 }
 
 /**

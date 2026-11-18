@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.2
+
+### Added
+
+- The schema now covers access passes (`accessPoints`, `accessPlans`,
+  `purchaseAccessPass`, `myAccessPasses`, `createAccessPassCode`,
+  `scanAccessPass`) and door sales (`sellEventTicketsAtDoor`).
+
+### Fixed
+
+- `createIdempotencyKey` works without a global `crypto`, as on React Native.
+
 ## 0.1.1
 
 ### Added
