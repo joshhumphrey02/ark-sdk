@@ -98,12 +98,15 @@ export function createCartlyBrowserClient(options: CartlyClientOptions) {
 }
 
 /**
- * The client for a mobile app (React Native, Expo) or a website's own
- * server, signing people in to their Cartly accounts: merchants and their
- * staff, and event-goers on a marketplace. The refresh token is kept in
- * `refreshTokens` (expo-secure-store, or the website server's encrypted
- * session); the access token stays in memory. Browsers on Cartly's own
- * origins use `createCartlyBrowserClient` (HttpOnly cookie) instead.
+ * The client for an app Cartly itself runs (Cartly Business, Acessyn's app
+ * and website), signing people in to their whole Cartly account. The
+ * refresh token is kept in `refreshTokens` (expo-secure-store, or the
+ * website server's encrypted session); the access token stays in memory.
+ *
+ * A merchant's own app or website never gets a person's Cartly account: it
+ * uses `createCartlyConnectedApp` (approved for one business, with the
+ * permissions the person grants). Its shoppers sign in to the store
+ * (`customerLogin`), not to Cartly.
  */
 export function createCartlyAppClient(
   options: CartlyClientOptions & { refreshTokens: RefreshTokenStore }

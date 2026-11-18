@@ -61,6 +61,13 @@ export {
   type ShopperOAuthProvider,
 } from "./rest/services"
 export { parseSse, readSse, type SseEvent } from "./rest/sse"
+export {
+  createCartlyConnectedApp,
+  type CartlyConnectedApp,
+  type ConnectedAppOptions,
+  type ConnectedAppTokens,
+  type ConnectedAppTokenStore,
+} from "./rest/connected-app"
 export { createPkce, type Pkce, type PkceCrypto } from "./pkce"
 export {
   cartlyEndpoints,

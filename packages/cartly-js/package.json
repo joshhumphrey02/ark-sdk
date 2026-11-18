@@ -1,6 +1,6 @@
 {
   "name": "@nerdstackgrp/cartly",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "The typed Cartly SDK: every merchant and customer GraphQL operation typed, a client for servers, browsers and mobile apps, sign-in (with token mode for apps), REST flows, subscriptions, errors and React hooks.",
   "license": "MIT",
   "author": "Nerdstack",

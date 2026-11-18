@@ -62,10 +62,44 @@ The GraphQL client attaches a fresh access token to every call and refreshes
 once on `UNAUTHENTICATED`. Tokens are kept in memory only; tabs share one
 refresh over a `BroadcastChannel`.
 
-## A phone app, or another site's server (token mode)
+## A merchant's own app: Sign in with Cartly
 
-Merchants, their staff and account holders (e.g. event-goers) sign in with
-their Cartly accounts. Where there is no HttpOnly cookie for the refresh
+Register the app and its return addresses in the Cartly web app
+(`/account/developers`); a phone app is a public client (no secret). A
+person approves it for one business, and the app gets a token for that
+business and the permissions they grant, never their Cartly account.
+
+```ts
+import * as SecureStore from "expo-secure-store";
+import { createCartlyConnectedApp, createPkce } from "@nerdstackgrp/cartly";
+
+export const cartly = createCartlyConnectedApp({
+  apiUrl: "https://api.cartly.store",
+  appUrl: "https://merchant.nerdstackgrp.com", // where Cartly's consent page is
+  clientId: "YOUR_CLIENT_ID",
+  redirectUri: "com.example.app:/callback", // registered with the app
+  tokens: {
+    get: async () => JSON.parse((await SecureStore.getItemAsync("cartly")) ?? "null"),
+    set: (t) => SecureStore.setItemAsync("cartly", JSON.stringify(t)),
+    clear: () => SecureStore.deleteItemAsync("cartly"),
+  },
+});
+
+const pkce = await createPkce(); // React Native: pass expo-crypto's functions
+const url = cartly.authorizeUrl({ scopes: ["orders.read"], state, codeChallenge: pkce.challenge });
+// …open url in an auth session; on the return address:
+await cartly.completeAuthorization({ params, expectedState: state, codeVerifier: pkce.verifier });
+await cartly.graphql.request(OrdersQuery); // as the app, for that business
+```
+
+A server app (confidential client) also passes `clientSecret`; never put it
+in a phone app or browser code. The business can disconnect the app at any
+time (Settings → Connected apps).
+
+## An app Cartly runs (token mode)
+
+For Cartly's own apps (Cartly Business, Acessyn), where people sign in to
+their whole Cartly account. Where there is no HttpOnly cookie for the refresh
 token, the app keeps it in its own secure storage; the access token stays in
 memory.
 
@@ -84,7 +118,8 @@ export const cartly = createCartlyAppClient({
 
 await cartly.auth.login({ email, password });
 
-// Google or Apple: the app's return address must be allowed by Cartly.
+// Google or Apple: the return address must be in the API's
+// OAUTH_APP_REDIRECT_URIS (one entry per app Cartly runs).
 const pkce = await createPkce(); // React Native: pass expo-crypto's functions
 const url = cartly.oauthStartUrl("google", { redirectUri: "myapp://auth", codeChallenge: pkce.challenge });
 // …open url in an auth session, read ?code= from the return, then:
