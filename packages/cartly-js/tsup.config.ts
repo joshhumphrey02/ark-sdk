@@ -33,6 +33,8 @@ export default defineConfig({
     operations: "src/operations/index.ts",
     react: "src/react/index.ts",
     "storefront-content": "src/storefront-content.ts",
+    media: "src/rest/media.ts",
+    realtime: "src/realtime/index.ts",
   },
   format: ["esm", "cjs"],
   dts: true,
@@ -44,7 +46,7 @@ export default defineConfig({
   // (isRetryable in /react on an error thrown by the client from ".").
   splitting: true,
   target: "es2022",
-  external: ["react", "@tanstack/react-query"],
+  external: ["react", "@tanstack/react-query", "graphql-ws", "@nerdstackgrp/ark-client"],
   outExtension: ({ format }) => ({ js: format === "cjs" ? ".cjs" : ".js" }),
   onSuccess: markReactEntryAsClient,
 });

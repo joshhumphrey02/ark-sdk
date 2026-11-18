@@ -1,7 +1,7 @@
 {
   "name": "@nerdstackgrp/cartly",
   "version": "0.1.0",
-  "description": "The typed Cartly SDK: a GraphQL client with typed storefront, checkout and account operations, REST sign-in, sessions, errors and React hooks.",
+  "description": "The typed Cartly SDK: every merchant and customer GraphQL operation typed, a client for servers, browsers and mobile apps, sign-in (with token mode for apps), REST flows, subscriptions, errors and React hooks.",
   "license": "MIT",
   "author": "Nerdstack",
   "homepage": "https://github.com/joshhumphrey02/ark-sdk/tree/master/packages/cartly-js#readme",
@@ -78,10 +78,32 @@
         "default": "./dist/storefront-content.cjs"
       }
     },
+    "./media": {
+      "import": {
+        "types": "./dist/media.d.ts",
+        "default": "./dist/media.js"
+      },
+      "require": {
+        "types": "./dist/media.d.cts",
+        "default": "./dist/media.cjs"
+      }
+    },
+    "./realtime": {
+      "import": {
+        "types": "./dist/realtime.d.ts",
+        "default": "./dist/realtime.js"
+      },
+      "require": {
+        "types": "./dist/realtime.d.cts",
+        "default": "./dist/realtime.cjs"
+      }
+    },
+    "./schema.graphql": "./schema.graphql",
     "./package.json": "./package.json"
   },
   "files": [
     "dist",
+    "schema.graphql",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"
@@ -112,17 +134,22 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@graphql-typed-document-node/core": "3.2.0"
+    "@graphql-typed-document-node/core": "3.2.0",
+    "@nerdstackgrp/ark-client": "^1.1.0"
   },
   "peerDependencies": {
     "@tanstack/react-query": "^5.0.0",
-    "react": ">=19"
+    "react": ">=19",
+    "graphql-ws": "^6.0.0"
   },
   "peerDependenciesMeta": {
     "@tanstack/react-query": {
       "optional": true
     },
     "react": {
+      "optional": true
+    },
+    "graphql-ws": {
       "optional": true
     }
   },
@@ -131,9 +158,10 @@
     "@graphql-codegen/client-preset": "6.2.3",
     "@tanstack/react-query": "5.105.0",
     "@types/react": "^19.0.0",
-    "graphql": "17.0.2",
+    "graphql": "16.11.0",
     "react": "^19.0.0",
     "tsup": "^8.3.5",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "graphql-ws": "6.0.8"
   }
 }

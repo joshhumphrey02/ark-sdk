@@ -11,3 +11,7 @@ repository.
   website-builder and SEO operations.
 - `CartlyApiError` with stable error codes.
 - React provider, scope and query hooks (`/react`).
+- Token mode for phone apps and other sites' servers (`createCartlyAppClient`),
+  PKCE and Google/Apple sign-in for apps.
+- REST flows on `client.api`, media helpers (`/media`), subscriptions
+  (`/realtime`), and the API's SDK schema (`/schema.graphql`).

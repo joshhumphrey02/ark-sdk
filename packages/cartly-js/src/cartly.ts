@@ -1,7 +1,13 @@
 import { assertSecureUrl } from "./context"
 import { createGraphQLClient, type FetchInit } from "./graphql/client"
-import { createAuthApi } from "./rest/auth"
+import {
+  createAuthApi,
+  oauthStartUrl,
+  type OAuthProvider,
+  type RefreshTokenStore,
+} from "./rest/auth"
 import { createRestTransport } from "./rest/http"
+import { createRestServices } from "./rest/services"
 import { createSessionManager } from "./session/session-manager"
 
 export interface CartlyEndpoints {
@@ -31,6 +37,14 @@ export interface CartlyClientOptions {
    * never mix. Default "cartly-auth".
    */
   channelName?: string
+  /**
+   * Token mode: where the refresh token is kept when there is no HttpOnly
+   * cookie for it (a mobile app's secure storage, or a website server's own
+   * session). Omit in a browser on Cartly's own origins.
+   */
+  refreshTokens?: RefreshTokenStore
+  /** A stable id for this install, sent at sign-in (token mode). */
+  deviceId?: () => string | null | Promise<string | null>
 }
 
 /**
@@ -46,7 +60,10 @@ export function createCartlyBrowserClient(options: CartlyClientOptions) {
     fetch: options.fetch,
     timeoutMs: options.timeoutMs,
   })
-  const auth = createAuthApi(rest)
+  const auth = createAuthApi(rest, {
+    refreshTokens: options.refreshTokens,
+    deviceId: options.deviceId,
+  })
   const session = createSessionManager({
     auth,
     channelName: options.channelName,
@@ -58,7 +75,40 @@ export function createCartlyBrowserClient(options: CartlyClientOptions) {
     context: async () => ({ accessToken: await session.getAccessToken() }),
     onUnauthenticated: () => session.refresh(),
   })
-  return { endpoints, rest, auth, session, graphql }
+  const api = createRestServices({
+    rest,
+    apiOrigin: endpoints.origin,
+    fetch: options.fetch,
+    accessToken: () => session.getAccessToken(),
+  })
+  return {
+    endpoints,
+    rest,
+    auth,
+    session,
+    graphql,
+    /** The other REST endpoints: payment verification, media, devices, streams, audit log. */
+    api,
+    /** Google or Apple sign-in for an app (token mode); see `createPkce`. */
+    oauthStartUrl: (
+      provider: OAuthProvider,
+      start: { redirectUri: string; codeChallenge: string }
+    ) => oauthStartUrl(endpoints.origin, provider, start),
+  }
+}
+
+/**
+ * The client for a mobile app (React Native, Expo) or a website's own
+ * server, signing people in to their Cartly accounts: merchants and their
+ * staff, and event-goers on a marketplace. The refresh token is kept in
+ * `refreshTokens` (expo-secure-store, or the website server's encrypted
+ * session); the access token stays in memory. Browsers on Cartly's own
+ * origins use `createCartlyBrowserClient` (HttpOnly cookie) instead.
+ */
+export function createCartlyAppClient(
+  options: CartlyClientOptions & { refreshTokens: RefreshTokenStore }
+) {
+  return createCartlyBrowserClient(options)
 }
 
 export type CartlyBrowserClient = ReturnType<typeof createCartlyBrowserClient>

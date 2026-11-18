@@ -26,7 +26,10 @@ export {
 } from "./rest/http"
 export {
   createAuthApi,
+  oauthStartUrl,
   type AuthApi,
+  type AuthApiOptions,
+  type RefreshTokenStore,
   type AuthSession,
   type ContinueResult,
   type LoginInput,
@@ -44,7 +47,24 @@ export {
   type SessionStatus,
 } from "./session/session-manager"
 export {
+  createRestServices,
+  type AuditLogEntry,
+  type AuditLogPage,
+  type AuditLogQuery,
+  type DeviceRegistration,
+  type EloraStreamActivity,
+  type EloraStreamEvent,
+  type EloraTurnInput,
+  type PaymentVerification,
+  type RestServices,
+  type RestServicesOptions,
+  type ShopperOAuthProvider,
+} from "./rest/services"
+export { parseSse, readSse, type SseEvent } from "./rest/sse"
+export { createPkce, type Pkce, type PkceCrypto } from "./pkce"
+export {
   cartlyEndpoints,
+  createCartlyAppClient,
   createCartlyBrowserClient,
   createCartlyServerClient,
   type CartlyBrowserClient,

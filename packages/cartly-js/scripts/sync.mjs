@@ -7,8 +7,9 @@
  *   CARTLY_STORES_PATH=/path/to/cartly-stores npm run sync
  *   npm run sync:check           # exit 1 if src/ differs from cartly-stores
  *
- * Then `npm run codegen` and commit src/ (src/gql is regenerated from this
- * package's own operations, never copied). Change the SDK in cartly-stores,
+ * Then `npm run codegen` and commit src/ and schema.graphql (src/gql is
+ * regenerated here from the SDK schema and this package's operations, never
+ * copied: cartly-stores' generated files carry its apps' operations too). Change the SDK in cartly-stores,
  * not here: the next sync overwrites every synced path.
  */
 import { existsSync } from "node:fs";
@@ -25,6 +26,8 @@ const SYNCED = [
   "src/context.ts",
   "src/errors.ts",
   "src/storefront-content.ts",
+  "src/pkce.ts",
+  "src/realtime",
   "src/graphql",
   "src/rest",
   "src/session",
@@ -32,8 +35,13 @@ const SYNCED = [
   "src/operations",
 ];
 
-/** Needed by codegen, but gitignored: the full schema is not public. */
-const SCHEMA = "schema/schema.graphql";
+/**
+ * The SDK schema (the API's every merchant, account and shopper operation,
+ * never platform-staff ones). Public: it is committed and shipped as
+ * `@nerdstackgrp/cartly/schema.graphql` for apps generating their own types.
+ */
+const SCHEMA_SOURCE = "schema/sdk-schema.graphql";
+const SCHEMA = "schema.graphql";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const target = path.resolve(here, "..");
@@ -103,6 +111,5 @@ for (const [file, text] of wanted) {
 }
 console.log(`Synced ${wanted.size} files from ${source}.`);
 
-await mkdir(path.join(target, path.dirname(SCHEMA)), { recursive: true });
-await copyFile(path.join(source, SCHEMA), path.join(target, SCHEMA));
+await copyFile(path.join(source, SCHEMA_SOURCE), path.join(target, SCHEMA));
 console.log(`Copied ${SCHEMA}. Now run npm run codegen.`);

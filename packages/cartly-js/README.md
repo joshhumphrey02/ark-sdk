@@ -62,6 +62,55 @@ The GraphQL client attaches a fresh access token to every call and refreshes
 once on `UNAUTHENTICATED`. Tokens are kept in memory only; tabs share one
 refresh over a `BroadcastChannel`.
 
+## A phone app, or another site's server (token mode)
+
+Merchants, their staff and account holders (e.g. event-goers) sign in with
+their Cartly accounts. Where there is no HttpOnly cookie for the refresh
+token, the app keeps it in its own secure storage; the access token stays in
+memory.
+
+```ts
+import * as SecureStore from "expo-secure-store";
+import { createCartlyAppClient, createPkce } from "@nerdstackgrp/cartly";
+
+export const cartly = createCartlyAppClient({
+  apiUrl: "https://api.cartly.store",
+  refreshTokens: {
+    get: () => SecureStore.getItemAsync("cartly.refresh"),
+    set: (token) => SecureStore.setItemAsync("cartly.refresh", token),
+    clear: () => SecureStore.deleteItemAsync("cartly.refresh"),
+  },
+});
+
+await cartly.auth.login({ email, password });
+
+// Google or Apple: the app's return address must be allowed by Cartly.
+const pkce = await createPkce(); // React Native: pass expo-crypto's functions
+const url = cartly.oauthStartUrl("google", { redirectUri: "myapp://auth", codeChallenge: pkce.challenge });
+// …open url in an auth session, read ?code= from the return, then:
+await cartly.auth.exchangeOAuthCode({ code, codeVerifier: pkce.verifier });
+```
+
+On a website's server, `refreshTokens` is the server's own encrypted session
+for that visitor. Never keep the token anywhere page scripts can read.
+
+## REST flows and live updates
+
+`cartly.api` covers what isn't GraphQL: `payments.verify(reference)` on the
+payment return page, `media.upload(tenantId, { file })`,
+`devices.register(...)`, `notifications.createStreamTicket()`,
+`auditLogs(tenantId)`, `elora.streamTurn(...)` and
+`storefront.oauthStartUrl(...)` for shoppers. Subscriptions run over
+WebSocket with `createCartlySubscriptions` from
+`@nerdstackgrp/cartly/realtime` (install `graphql-ws`).
+
+## Every operation, typed
+
+The package ships the Cartly API's SDK schema (every merchant, account and
+shopper operation): point your own codegen at
+`node_modules/@nerdstackgrp/cartly/schema.graphql` and pass the typed
+documents to `request()`, `execute()` or the React hooks.
+
 ## React
 
 Needs `react` 19 and `@tanstack/react-query` 5.
@@ -101,6 +150,9 @@ failures. `isRetryable(error)`, `isAuthError(error)` and
 | `@nerdstackgrp/cartly/graphql/types`    | result, variable, input and enum types                       |
 | `@nerdstackgrp/cartly/storefront-content` | named storefront content shapes and home-page editor limits |
 | `@nerdstackgrp/cartly/react`            | provider, scope, session and query hooks                     |
+| `@nerdstackgrp/cartly/media`            | media upload helpers (file checks, ARK upload)               |
+| `@nerdstackgrp/cartly/realtime`         | GraphQL subscriptions over WebSocket                         |
+| `@nerdstackgrp/cartly/schema.graphql`   | the API's SDK schema, for your own codegen                   |
 
 ## Developing this package
 
@@ -114,8 +166,9 @@ npm run sync:check  # fails if src/ has drifted from cartly-stores
 ```
 
 Make SDK changes in cartly-stores, then sync: a sync overwrites every synced
-path. The schema copy is gitignored; `codegen/type-anchors.graphql` lists input
-types the SDK exports that none of its operations take.
+path. `schema.graphql` is the API's SDK schema (never platform-staff
+operations); `codegen/type-anchors.graphql` lists input types the SDK exports
+that none of its operations take.
 
 ## License
 
